@@ -401,15 +401,49 @@ export default function App() {
     });
   }, []);
 
+  function normalizeApiBase(value: string) {
+    const raw = String(value ?? "").trim();
+    if (!raw) return "http://localhost:3001";
+
+    let parsed: URL;
+    try {
+      parsed = new URL(raw);
+    } catch {
+      throw new Error("API base inválida. Ex: http://144.22.199.29:3001");
+    }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      throw new Error("API base deve ser http ou https.");
+    }
+    return parsed.toString().replace(/\/$/, "");
+  }
+
+  function hostPermissionForBase(base: string) {
+    const parsed = new URL(base);
+    return `${parsed.protocol}//${parsed.host}/*`;
+  }
+
   async function handleSaveApiBase() {
     setApiBaseSaving(true);
     setApiBaseInfo(null);
     setError(null);
     try {
-      const response = await chrome.runtime.sendMessage({ type: "SET_API_BASE", apiBase });
-      if (!response?.ok) throw new Error(response?.error ?? "Falha ao configurar API base.");
-      setApiBase(response.apiBase ?? apiBase);
-      setApiBaseInfo(`API configurada: ${response.apiBase ?? apiBase}`);
+      const normalized = normalizeApiBase(apiBase);
+      const origin = hostPermissionForBase(normalized);
+
+      const hasPerm: boolean = await new Promise((resolve) => {
+        chrome.permissions.contains({ origins: [origin] }, (result) => resolve(Boolean(result)));
+      });
+
+      if (!hasPerm) {
+        const granted: boolean = await new Promise((resolve) => {
+          chrome.permissions.request({ origins: [origin] }, (result) => resolve(Boolean(result)));
+        });
+        if (!granted) throw new Error("Permissão negada para acessar a API nesse domínio.");
+      }
+
+      await chrome.storage.local.set({ apiBase: normalized });
+      setApiBase(normalized);
+      setApiBaseInfo(`API configurada: ${normalized}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Erro ao configurar API.");
     } finally {
