@@ -296,7 +296,7 @@ async function scrapeShopee(page, query) {
   await autoScroll(page, 6, 1000, 500);
   await page.waitForTimeout(500);
 
-  const items = await evaluateWithRecovery(page, () => {
+  const domItems = await evaluateWithRecovery(page, () => {
     const cards = Array.from(
       document.querySelectorAll("div[data-sqe='item'], .shopee-search-item-result__item")
     );
@@ -334,7 +334,7 @@ async function scrapeShopee(page, query) {
 
   // Fallback for Shopee layout/AB tests: read generic product anchors.
   const fallbackItems =
-    items.length > 0
+    domItems.length > 0
       ? []
       : await evaluateWithRecovery(page, () => {
           const seen = new Set();
@@ -372,34 +372,77 @@ async function scrapeShopee(page, query) {
             .slice(0, 80);
         });
 
-  const rawItems = items.length > 0 ? items : fallbackItems;
-
-  return items
-    .map((item) => ({
+  const parseRawItems = (raw) =>
+    raw
+      .map((item) => ({
       name: item.name || "Produto sem nome",
       url: item.url || null,
       price: parseBrlValue(item.priceText),
       shipping: parseShipping(item.shippingText),
       sales: parseSales(item.soldText),
       rating: parseRating(item.ratingText)
-    }))
-    .concat(
-      rawItems
-        .map((item) => ({
-          name: item.name || "Produto sem nome",
-          url: item.url || null,
-          price: parseBrlValue(item.priceText),
-          shipping: parseShipping(item.shippingText),
-          sales: parseSales(item.soldText),
-          rating: parseRating(item.ratingText)
-        }))
-        .filter((item) => item.price > 0)
-    )
+      }))
+      .filter((item) => item.price > 0);
+
+  let parsedItems = parseRawItems(domItems.length > 0 ? domItems : fallbackItems);
+
+  // Final fallback: call Shopee search API directly using browser session/cookies.
+  if (parsedItems.length === 0) {
+    try {
+      const apiUrl = `https://shopee.com.br/api/v4/search/search_items?by=relevancy&keyword=${encodeURIComponent(
+        query
+      )}&limit=${MAX_ITEMS}&newest=0&order=desc&page_type=search&scenario=PAGE_GLOBAL_SEARCH&version=2`;
+      const response = await page.request.get(apiUrl, {
+        headers: {
+          accept: "application/json",
+          "x-requested-with": "XMLHttpRequest",
+          referer: searchUrl
+        },
+        timeout: 20000
+      });
+      if (response.ok()) {
+        const payload = await response.json();
+        const apiItems = Array.isArray(payload?.items) ? payload.items : [];
+        parsedItems = apiItems
+          .map((entry) => entry?.item_basic ?? entry)
+          .filter(Boolean)
+          .map((item) => {
+            const rawPrice = Number(item.price_min ?? item.price ?? 0);
+            const normalizedPrice = rawPrice > 0 ? rawPrice / 100000 : 0;
+            const shopId = item.shopid ?? item.shop_id ?? "";
+            const itemId = item.itemid ?? item.item_id ?? "";
+            const itemName = String(item.name ?? "").trim();
+            const slug = itemName
+              .toLowerCase()
+              .replace(/[^\p{L}\p{N}\s-]/gu, "")
+              .trim()
+              .replace(/\s+/g, "-");
+            const url =
+              shopId && itemId
+                ? `https://shopee.com.br/${slug || "produto"}-i.${shopId}.${itemId}`
+                : null;
+
+            return {
+              name: itemName || "Produto sem nome",
+              url,
+              price: Number.isFinite(normalizedPrice) ? Number(normalizedPrice.toFixed(2)) : 0,
+              shipping: 0,
+              sales: Number(item.historical_sold ?? item.sold ?? 0) || 0,
+              rating: Number(item.item_rating?.rating_star ?? item.rating_star ?? 0) || 0
+            };
+          })
+          .filter((item) => item.price > 0);
+      }
+    } catch {
+      // keep graceful fallback below
+    }
+  }
+
+  return parsedItems
     .filter((item, index, array) => {
       if (item.url) return array.findIndex((x) => x.url === item.url) === index;
       return array.findIndex((x) => x.name === item.name && x.price === item.price) === index;
     })
-    .filter((item) => item.price > 0)
     .slice(0, MAX_ITEMS);
 }
 
