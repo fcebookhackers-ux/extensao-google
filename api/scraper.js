@@ -84,6 +84,23 @@ function sanitizeQuery(value) {
     .join(" ");
 }
 
+function shopeeSlugToQuery(url) {
+  try {
+    const parsed = new URL(url);
+    if (!parsed.hostname.includes("shopee")) return "";
+    const raw = decodeURIComponent(parsed.pathname.split("/").filter(Boolean).pop() || "");
+    if (!raw) return "";
+    const withoutIds = raw.replace(/-i\.\d+\.\d+$/i, "");
+    const words = withoutIds
+      .replace(/[-_.]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    return sanitizeQuery(words);
+  } catch {
+    return "";
+  }
+}
+
 async function readProductTitle(page) {
   return page.evaluate(() => {
     const ogTitle = document.querySelector('meta[property="og:title"]')?.getAttribute("content");
@@ -490,15 +507,25 @@ async function runSingleAttempt(url, proxyConfig) {
   page.setDefaultTimeout(DEFAULT_TIMEOUT_MS);
 
   try {
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: DEFAULT_TIMEOUT_MS });
+    const marketplace = detectMarketplace(url);
+    // Tracking params on Shopee URLs are noisy and frequently trigger extra redirects.
+    let entryUrl = url;
+    if (marketplace === "shopee") {
+      const parsed = new URL(url);
+      entryUrl = `${parsed.origin}${parsed.pathname}`;
+    }
+
+    await page.goto(entryUrl, { waitUntil: "domcontentloaded", timeout: DEFAULT_TIMEOUT_MS });
     await page.waitForTimeout(1200);
 
     const rawTitle = await readProductTitle(page);
     const fallbackQuery = new URL(url).pathname.split("/").filter(Boolean).join(" ");
-    const query = sanitizeQuery(normalizeWhitespace(rawTitle) || normalizeWhitespace(fallbackQuery));
+    const shopeeQuery = marketplace === "shopee" ? shopeeSlugToQuery(url) : "";
+    const query = sanitizeQuery(
+      normalizeWhitespace(rawTitle) || shopeeQuery || normalizeWhitespace(fallbackQuery)
+    );
     if (!query) throw new Error("Não foi possível identificar o produto para pesquisar concorrentes.");
 
-    const marketplace = detectMarketplace(url);
     const items =
       marketplace === "mercado_livre"
         ? await scrapeMercadoLivre(page, query)
