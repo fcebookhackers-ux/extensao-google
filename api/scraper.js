@@ -115,6 +115,46 @@ function detectMarketplace(url) {
   return "other";
 }
 
+function isContextDestroyedError(error) {
+  const message = String(error?.message ?? error ?? "").toLowerCase();
+  return (
+    message.includes("execution context was destroyed") ||
+    message.includes("most likely because of a navigation") ||
+    message.includes("cannot find context with specified id")
+  );
+}
+
+async function waitForPageStability(page) {
+  try {
+    await page.waitForLoadState("domcontentloaded", { timeout: 6000 });
+  } catch {
+    // ignore
+  }
+  try {
+    await page.waitForLoadState("networkidle", { timeout: 4000 });
+  } catch {
+    // ignore
+  }
+  await page.waitForTimeout(250);
+}
+
+async function evaluateWithRecovery(page, evaluateFn, arg, retries = 2) {
+  let lastError;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      if (typeof arg === "undefined") return await page.evaluate(evaluateFn);
+      return await page.evaluate(evaluateFn, arg);
+    } catch (error) {
+      lastError = error;
+      if (!isContextDestroyedError(error) || attempt === retries) throw error;
+      // Shopee often triggers background navigation/rehydration; retry after page settles.
+      // eslint-disable-next-line no-await-in-loop
+      await waitForPageStability(page);
+    }
+  }
+  throw lastError;
+}
+
 async function safeWaitForAnySelector(page, selectors, timeoutMs) {
   const timeout = Math.max(1000, timeoutMs ?? 8000);
   const start = Date.now();
@@ -138,7 +178,7 @@ async function safeWaitForAnySelector(page, selectors, timeoutMs) {
 async function dismissCommonOverlays(page) {
   // Best-effort: cookie banners / modals often break Shopee search results.
   try {
-    await page.evaluate(() => {
+    await evaluateWithRecovery(page, () => {
       const candidates = Array.from(document.querySelectorAll("button, a")).filter((el) => {
         const text = (el.textContent || "").trim().toLowerCase();
         return (
@@ -166,7 +206,7 @@ async function dismissCommonOverlays(page) {
 async function autoScroll(page, steps = 6, stepPx = 900, delayMs = 450) {
   for (let i = 0; i < steps; i += 1) {
     // eslint-disable-next-line no-await-in-loop
-    await page.evaluate((y) => window.scrollBy(0, y), stepPx);
+    await evaluateWithRecovery(page, (y) => window.scrollBy(0, y), stepPx, 1);
     // eslint-disable-next-line no-await-in-loop
     await page.waitForTimeout(delayMs);
   }
@@ -182,7 +222,7 @@ async function scrapeMercadoLivre(page, query) {
   );
   await page.waitForTimeout(600);
 
-  const items = await page.evaluate(() => {
+  const items = await evaluateWithRecovery(page, () => {
     const cards = Array.from(
       document.querySelectorAll("li.ui-search-layout__item, .ui-search-result__wrapper")
     );
@@ -251,7 +291,7 @@ async function scrapeShopee(page, query) {
   await autoScroll(page, 6, 1000, 500);
   await page.waitForTimeout(500);
 
-  const items = await page.evaluate(() => {
+  const items = await evaluateWithRecovery(page, () => {
     const cards = Array.from(
       document.querySelectorAll("div[data-sqe='item'], .shopee-search-item-result__item")
     );
