@@ -8,6 +8,11 @@ function getRefreshHours() {
 }
 
 export function startAutoRefresh({ supabase, enqueueRefresh }) {
+  if (String(process.env.AUTO_REFRESH_ENABLED ?? "true").toLowerCase() === "false") {
+    console.log("auto-refresh: disabled by AUTO_REFRESH_ENABLED=false");
+    return { stop: () => undefined };
+  }
+
   if (!supabase || !enqueueRefresh) {
     return { stop: () => undefined };
   }
