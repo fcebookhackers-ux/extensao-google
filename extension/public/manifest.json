@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "name": "Zapfllow Intel",
+  "version": "0.1.0",
+  "description": "Analisa concorrentes no Mercado Livre e Shopee em tempo real.",
+  "action": {
+    "default_title": "Analisar concorrência",
+    "default_popup": "src/popup/index.html"
+  },
+  "permissions": ["activeTab", "tabs", "storage", "scripting", "permissions"],
+  "host_permissions": [
+    "http://localhost:3001/*",
+    "https://slktzwdfwvjlbozrtnrl.supabase.co/*",
+    "https://www.mercadolivre.com/*",
+    "https://produto.mercadolivre.com.br/*",
+    "https://www.mercadolivre.com.br/*",
+    "https://shopee.com.br/*",
+    "https://www.shopee.com.br/*"
+  ],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.mercadolivre.com/*",
+        "https://produto.mercadolivre.com.br/*",
+        "https://www.mercadolivre.com.br/*",
+        "https://shopee.com.br/*",
+        "https://www.shopee.com.br/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

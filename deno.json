@@ -1,0 +1,17 @@
+{
+  "tasks": {
+    "test": "deno test --allow-all supabase/functions/_tests/",
+    "lint": "deno lint supabase/functions/"
+  },
+  "lint": {
+    "include": ["supabase/functions/"]
+  },
+  "fmt": {
+    "include": ["supabase/functions/"],
+    "options": {
+      "semiColons": true,
+      "singleQuote": true
+    }
+  },
+  "importMap": "./supabase/import_map.json"
+}

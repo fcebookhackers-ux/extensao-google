@@ -1,0 +1,86 @@
+name: Deploy Lovable via FTP na Hostinger
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clonar o repositório
+        uses: actions/checkout@v3
+
+      - name: Configurar Node.js 18
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+
+      - name: Instalar dependências ignorando conflitos
+        run: npm install --legacy-peer-deps
+
+      - name: Build do projeto
+        run: npm run build
+
+      - name: Criar .htaccess para SPA
+        run: |
+          cat > dist/.htaccess << 'EOF'
+          <IfModule mod_rewrite.c>
+            RewriteEngine On
+            RewriteBase /
+            
+            # Força HTTPS (opcional, remova se não usar SSL)
+            # RewriteCond %{HTTPS} off
+            # RewriteRule ^(.*)$ https://%{HTTP_HOST}/$1 [R=301,L]
+            
+            # Permite acesso direto a arquivos existentes
+            RewriteCond %{REQUEST_FILENAME} !-f
+            RewriteCond %{REQUEST_FILENAME} !-d
+            
+            # Redireciona todas as outras rotas para index.html
+            RewriteRule . /index.html [L]
+          </IfModule>
+          
+          # Configurações de cache
+          <IfModule mod_expires.c>
+            ExpiresActive On
+            ExpiresByType image/jpg "access plus 1 year"
+            ExpiresByType image/jpeg "access plus 1 year"
+            ExpiresByType image/gif "access plus 1 year"
+            ExpiresByType image/png "access plus 1 year"
+            ExpiresByType image/svg+xml "access plus 1 year"
+            ExpiresByType text/css "access plus 1 month"
+            ExpiresByType application/javascript "access plus 1 month"
+            ExpiresByType text/javascript "access plus 1 month"
+            ExpiresByType application/pdf "access plus 1 month"
+            ExpiresByType text/html "access plus 0 seconds"
+          </IfModule>
+          
+          # Compressão Gzip
+          <IfModule mod_deflate.c>
+            AddOutputFilterByType DEFLATE text/html text/plain text/xml text/css text/javascript application/javascript application/json
+          </IfModule>
+          
+          # Segurança
+          <IfModule mod_headers.c>
+            Header set X-Content-Type-Options "nosniff"
+            Header set X-Frame-Options "SAMEORIGIN"
+            Header set X-XSS-Protection "1; mode=block"
+          </IfModule>
+          EOF
+
+      - name: Mostrar arquivos gerados
+        run: ls -al dist/
+
+      - name: Deploy FTP para Hostinger
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.4
+        with:
+          server: ${{ secrets.FTP_HOST }}
+          username: ${{ secrets.FTP_USER }}
+          password: ${{ secrets.FTP_PASS }}
+          local-dir: dist/
+          server-dir: /public_html/
+          dangerous-clean-slate: true
+          dry-run: false
+          log-level: verbose
