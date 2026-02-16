@@ -285,7 +285,12 @@ async function scrapeShopee(page, query) {
   await dismissCommonOverlays(page);
   await safeWaitForAnySelector(
     page,
-    ["div[data-sqe='item']", ".shopee-search-item-result__item", "[data-testid='product-card']"],
+    [
+      "div[data-sqe='item']",
+      ".shopee-search-item-result__item",
+      "[data-testid='product-card']",
+      "a[href*='/product/']"
+    ],
     14000
   );
   await autoScroll(page, 6, 1000, 500);
@@ -327,6 +332,48 @@ async function scrapeShopee(page, query) {
     });
   });
 
+  // Fallback for Shopee layout/AB tests: read generic product anchors.
+  const fallbackItems =
+    items.length > 0
+      ? []
+      : await evaluateWithRecovery(page, () => {
+          const seen = new Set();
+          const anchors = Array.from(document.querySelectorAll("a[href*='/product/']"));
+          return anchors
+            .map((anchor) => {
+              const href = anchor.getAttribute("href") ?? "";
+              const absoluteLink = href ? new URL(href, window.location.origin).toString() : "";
+              if (!absoluteLink || seen.has(absoluteLink)) return null;
+              seen.add(absoluteLink);
+
+              const card = anchor.closest("section, li, div") ?? anchor;
+              const text = (card.textContent ?? anchor.textContent ?? "").trim();
+              if (!text) return null;
+
+              const name =
+                card.querySelector("div[data-sqe='name'], .line-clamp-2, [title]")?.textContent ??
+                anchor.getAttribute("title") ??
+                "";
+              const priceMatch = text.match(/R\$\s*[\d.]+(?:,\d{2})?/i)?.[0] ?? "";
+              const soldMatch = text.match(/([\d.,]+\s*(mil|k)?)\s*vendid/i)?.[0] ?? "";
+              const ratingMatch = text.match(/(\d[.,]\d)\s*de\s*5/i)?.[0] ?? "";
+              const shippingText = /frete gr(á|a)tis/i.test(text) ? "Frete grátis" : "";
+
+              return {
+                url: absoluteLink.trim(),
+                name: (name || "").trim(),
+                priceText: priceMatch.trim(),
+                shippingText,
+                soldText: soldMatch.trim(),
+                ratingText: ratingMatch.trim()
+              };
+            })
+            .filter(Boolean)
+            .slice(0, 80);
+        });
+
+  const rawItems = items.length > 0 ? items : fallbackItems;
+
   return items
     .map((item) => ({
       name: item.name || "Produto sem nome",
@@ -336,6 +383,22 @@ async function scrapeShopee(page, query) {
       sales: parseSales(item.soldText),
       rating: parseRating(item.ratingText)
     }))
+    .concat(
+      rawItems
+        .map((item) => ({
+          name: item.name || "Produto sem nome",
+          url: item.url || null,
+          price: parseBrlValue(item.priceText),
+          shipping: parseShipping(item.shippingText),
+          sales: parseSales(item.soldText),
+          rating: parseRating(item.ratingText)
+        }))
+        .filter((item) => item.price > 0)
+    )
+    .filter((item, index, array) => {
+      if (item.url) return array.findIndex((x) => x.url === item.url) === index;
+      return array.findIndex((x) => x.name === item.name && x.price === item.price) === index;
+    })
     .filter((item) => item.price > 0)
     .slice(0, MAX_ITEMS);
 }
