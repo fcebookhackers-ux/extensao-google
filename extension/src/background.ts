@@ -130,6 +130,13 @@ async function clearAlerts() {
   return parseApiResponse(response);
 }
 
+async function resetTestAccount() {
+  const base = await getApiBase();
+  const auth = await getAuthHeader();
+  const response = await fetch(`${base}/api/reset-test-account`, { method: "POST", headers: { ...auth } });
+  return parseApiResponse(response);
+}
+
 async function ackAlert(id: number) {
   const base = await getApiBase();
   const auth = await getAuthHeader();
@@ -295,6 +302,18 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         sendResponse({
           ok: false,
           error: error?.message ?? "Remove watch failed",
+          status: (error as any)?.status,
+          details: (error as any)?.payload?.details
+        })
+      );
+  }
+  if (message?.type === "RESET_TEST_ACCOUNT") {
+    resetTestAccount()
+      .then((data) => sendResponse({ ok: true, data }))
+      .catch((error) =>
+        sendResponse({
+          ok: false,
+          error: error?.message ?? "Reset test account failed",
           status: (error as any)?.status,
           details: (error as any)?.payload?.details
         })

@@ -496,6 +496,40 @@ app.delete("/api/history", async (req, res) => {
   return res.json({ ok: true });
 });
 
+app.post("/api/reset-test-account", async (req, res) => {
+  if (!supabaseAdmin) {
+    return res.status(500).json({
+      ok: false,
+      error: "Supabase not configured",
+      details: "Configure SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in api environment."
+    });
+  }
+  const user = await requireUser(req, res);
+  if (!user) return;
+
+  const userId = user.userId;
+
+  const [historyResult, alertsResult, watchResult, usageResult] = await Promise.all([
+    supabaseAdmin.from("market_competitor_analyses").delete().eq("user_id", userId),
+    supabaseAdmin.from("market_price_alerts").delete().eq("user_id", userId),
+    supabaseAdmin.from("market_watchlist").delete().eq("user_id", userId),
+    supabaseAdmin.from("market_usage_daily").delete().eq("user_id", userId)
+  ]);
+
+  const firstError =
+    historyResult.error ?? alertsResult.error ?? watchResult.error ?? usageResult.error;
+
+  if (firstError) {
+    return res.status(500).json({
+      ok: false,
+      error: "Failed to reset test account",
+      details: firstError.message
+    });
+  }
+
+  return res.json({ ok: true });
+});
+
 app.listen(port, () => {
   console.log(`API listening on http://localhost:${port}`);
 });

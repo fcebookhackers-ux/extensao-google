@@ -133,6 +133,9 @@ export default function App() {
   const [apiBaseInfo, setApiBaseInfo] = useState<string | null>(null);
   const [me, setMe] = useState<MeResponse | null>(null);
   const [meLoading, setMeLoading] = useState(false);
+  const [marginPct, setMarginPct] = useState(0);
+  const [showMarginEditor, setShowMarginEditor] = useState(false);
+  const [resetLoading, setResetLoading] = useState(false);
 
   const isAuthed = Boolean(authedEmail);
 
@@ -542,6 +545,48 @@ export default function App() {
     setAlerts([]);
   }
 
+  async function handleResetTestAccount() {
+    if (!confirm("Resetar conta de teste? Isso limpará histórico, monitorados, alertas e uso diário.")) {
+      return;
+    }
+    setResetLoading(true);
+    setError(null);
+    try {
+      const response = await chrome.runtime.sendMessage({ type: "RESET_TEST_ACCOUNT" });
+      if (!response?.ok) {
+        throw {
+          message: response?.error ?? "Falha ao resetar conta de teste.",
+          status: response?.status,
+          details: response?.details
+        };
+      }
+      setData(null);
+      setHistory([]);
+      setWatchlist([]);
+      setAlerts([]);
+      await loadMe();
+      setApiBaseInfo("Conta de teste resetada com sucesso.");
+    } catch (err) {
+      const e = err as { message?: string; status?: number; details?: unknown };
+      setError(
+        friendlyErrorMessage({
+          error: e?.message,
+          status: e?.status,
+          details: e?.details,
+          apiBase
+        })
+      );
+    } finally {
+      setResetLoading(false);
+    }
+  }
+
+  function handleMarginChange(nextValue: number) {
+    const clamped = Math.min(10, Math.max(-10, nextValue));
+    setMarginPct(clamped);
+    chrome.storage.local.set({ priceMarginPct: clamped });
+  }
+
   async function checkActiveTab() {
     try {
       const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -595,6 +640,15 @@ export default function App() {
       const stored = result.apiBase;
       if (typeof stored === "string" && stored.trim().length > 0) {
         setApiBase(stored.trim());
+      }
+    });
+  }, []);
+
+  useEffect(() => {
+    chrome.storage.local.get("priceMarginPct").then((result) => {
+      const stored = Number(result.priceMarginPct);
+      if (Number.isFinite(stored)) {
+        setMarginPct(Math.min(10, Math.max(-10, stored)));
       }
     });
   }, []);
@@ -661,6 +715,9 @@ export default function App() {
   );
   const trendChange = calculateTrendChange(data?.trend ?? []);
   const unackedAlertsCount = alerts.length;
+  const displayedSuggestedPrice = data
+    ? Number((data.suggestedPrice * (1 + marginPct / 100)).toFixed(2))
+    : null;
 
   async function openExternal(url: string) {
     try {
@@ -714,16 +771,27 @@ export default function App() {
           <div className="mt-2 rounded-xl border border-slate-800 bg-slate-900/60 p-2 text-xs text-slate-300">
             {meLoading && <p className="text-slate-400">Carregando uso...</p>}
             {!meLoading && me && (
-              <div className="flex items-center justify-between gap-2">
-                <span>
-                  Plano <span className="font-semibold text-slate-100">{me.plan}</span>
-                </span>
-                <span>
-                  Uso hoje{" "}
-                  <span className="font-semibold text-slate-100">
-                    {me.analysesToday}/{me.dailyAnalysisLimit}
+              <div className="space-y-1">
+                <div className="flex items-center justify-between gap-2">
+                  <span>
+                    Plano <span className="font-semibold text-slate-100">{me.plan}</span>
                   </span>
-                </span>
+                  <span>
+                    Uso hoje{" "}
+                    <span className="font-semibold text-slate-100">
+                      {me.analysesToday}/{me.dailyAnalysisLimit}
+                    </span>
+                  </span>
+                </div>
+                <div className="flex justify-end">
+                  <button
+                    onClick={() => void handleResetTestAccount()}
+                    disabled={resetLoading}
+                    className="text-[11px] text-slate-400 underline-offset-2 hover:underline disabled:opacity-60"
+                  >
+                    {resetLoading ? "resetando..." : "reset conta teste"}
+                  </button>
+                </div>
               </div>
             )}
           </div>
@@ -987,12 +1055,36 @@ export default function App() {
         <p className="text-xs text-slate-300">Preço sugerido (fórmula simples)</p>
         <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
           <span className="text-sm font-semibold">
-            {data ? formatPrice(data.suggestedPrice) : "—"}
+            {displayedSuggestedPrice !== null ? formatPrice(displayedSuggestedPrice) : "—"}
           </span>
-          <button className="rounded-full border border-slate-700 px-3 py-1 text-xs text-slate-200">
-            Ajustar margem
+          <button
+            onClick={() => setShowMarginEditor((prev) => !prev)}
+            className="rounded-full border border-slate-700 px-3 py-1 text-xs text-slate-200"
+          >
+            {showMarginEditor ? "Fechar ajuste" : "Ajustar margem"}
           </button>
         </div>
+        {showMarginEditor && (
+          <div className="mt-2 rounded-xl border border-slate-800 bg-slate-900/60 p-2 text-xs text-slate-300">
+            <div className="flex items-center justify-between gap-2">
+              <label htmlFor="marginRange">Margem adicional</label>
+              <span className="font-semibold">{marginPct > 0 ? `+${marginPct}` : marginPct}%</span>
+            </div>
+            <input
+              id="marginRange"
+              type="range"
+              min={-10}
+              max={10}
+              step={0.5}
+              value={marginPct}
+              onChange={(e) => handleMarginChange(Number(e.target.value))}
+              className="mt-2 w-full"
+            />
+            <p className="mt-1 text-[11px] text-slate-500">
+              Ajuste aplicado no preço sugerido base para sua estratégia.
+            </p>
+          </div>
+        )}
       </section>
 
       <section className="mt-3 rounded-2xl border border-slate-800 bg-[rgb(var(--panel))] p-3 max-sm:p-2">
