@@ -144,6 +144,7 @@ export default function App() {
   const [showMarginEditor, setShowMarginEditor] = useState(false);
   const [resetLoading, setResetLoading] = useState(false);
   const [activityLog, setActivityLog] = useState<ActivityItem[]>([]);
+  const [activityFilter, setActivityFilter] = useState<"all" | "error" | "warn" | "info">("all");
 
   const isAuthed = Boolean(authedEmail);
 
@@ -768,6 +769,9 @@ export default function App() {
   const displayedSuggestedPrice = data
     ? Number((data.suggestedPrice * (1 + marginPct / 100)).toFixed(2))
     : null;
+  const filteredActivity = activityLog.filter((item) =>
+    activityFilter === "all" ? true : item.level === activityFilter
+  );
 
   async function openExternal(url: string) {
     try {
@@ -1344,15 +1348,29 @@ export default function App() {
       <section className="mt-3 rounded-2xl border border-slate-800 bg-[rgb(var(--panel))] p-3 max-sm:p-2">
         <div className="flex items-center justify-between">
           <p className="text-xs text-slate-300">Atividades recentes</p>
-          <button
-            onClick={() => void clearActivityLog()}
-            className="text-[11px] text-slate-400 underline-offset-2 hover:underline"
-          >
-            limpar
-          </button>
+          <div className="flex items-center gap-2">
+            <select
+              value={activityFilter}
+              onChange={(e) =>
+                setActivityFilter(e.target.value as "all" | "error" | "warn" | "info")
+              }
+              className="rounded border border-slate-700 bg-slate-900/70 px-2 py-1 text-[11px] text-slate-300"
+            >
+              <option value="all">Todos</option>
+              <option value="error">Erros</option>
+              <option value="warn">Avisos</option>
+              <option value="info">Info</option>
+            </select>
+            <button
+              onClick={() => void clearActivityLog()}
+              className="text-[11px] text-slate-400 underline-offset-2 hover:underline"
+            >
+              limpar
+            </button>
+          </div>
         </div>
         <div className="mt-2 space-y-2">
-          {activityLog.slice(0, 6).map((item) => (
+          {filteredActivity.slice(0, 6).map((item) => (
             <div key={item.id} className="rounded-xl border border-slate-800 bg-slate-900/60 p-2 text-xs">
               <div className="flex items-center justify-between gap-2">
                 <span
@@ -1373,9 +1391,9 @@ export default function App() {
               <p className="mt-1 text-slate-300">{item.message}</p>
             </div>
           ))}
-          {activityLog.length === 0 && (
+          {filteredActivity.length === 0 && (
             <div className="rounded-xl border border-dashed border-slate-800 bg-slate-900/60 p-2 text-xs text-slate-400">
-              Sem atividades registradas.
+              Sem atividades para este filtro.
             </div>
           )}
         </div>
