@@ -56,6 +56,13 @@ type MeResponse = {
   user?: { id: string; email: string | null };
 };
 
+type ActivityItem = {
+  id: string;
+  timestamp: number;
+  level: "info" | "warn" | "error";
+  message: string;
+};
+
 const trendFallback = [0.2, 0.45, 0.3, 0.6, 0.5, 0.7, 0.62, 0.85];
 
 function normalizeTrend(values: number[]) {
@@ -136,6 +143,7 @@ export default function App() {
   const [marginPct, setMarginPct] = useState(0);
   const [showMarginEditor, setShowMarginEditor] = useState(false);
   const [resetLoading, setResetLoading] = useState(false);
+  const [activityLog, setActivityLog] = useState<ActivityItem[]>([]);
 
   const isAuthed = Boolean(authedEmail);
 
@@ -147,6 +155,7 @@ export default function App() {
     });
     await chrome.runtime.sendMessage({ type: "SET_ACCESS_TOKEN", accessToken: session.access_token });
     setAuthedEmail(email ?? null);
+    void addActivity("info", "Sessão autenticada.");
   }
 
   async function clearSession() {
@@ -154,6 +163,26 @@ export default function App() {
     await chrome.runtime.sendMessage({ type: "CLEAR_ACCESS_TOKEN" });
     setAuthedEmail(null);
     setMe(null);
+    void addActivity("info", "Logout realizado.");
+  }
+
+  async function addActivity(level: ActivityItem["level"], message: string) {
+    const nextItem: ActivityItem = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      timestamp: Date.now(),
+      level,
+      message
+    };
+    setActivityLog((prev) => {
+      const next = [nextItem, ...prev].slice(0, 20);
+      chrome.storage.local.set({ popupActivityLog: next });
+      return next;
+    });
+  }
+
+  async function clearActivityLog() {
+    setActivityLog([]);
+    await chrome.storage.local.set({ popupActivityLog: [] });
   }
 
   async function initAuth() {
@@ -279,20 +308,21 @@ export default function App() {
       }
       setData(response.data);
       setLastUpdated(Date.now());
+      void addActivity("info", "Análise concluída.");
       await loadHistory();
       await loadAlerts();
       await loadWatchlist();
       await loadMe();
     } catch (err) {
       const e = err as { message?: string; status?: number; details?: unknown };
-      setError(
-        friendlyErrorMessage({
-          error: e?.message,
-          status: e?.status,
-          details: e?.details,
-          apiBase
-        })
-      );
+      const msg = friendlyErrorMessage({
+        error: e?.message,
+        status: e?.status,
+        details: e?.details,
+        apiBase
+      });
+      setError(msg);
+      void addActivity("error", `Falha na análise: ${msg}`);
     } finally {
       setLoading(false);
     }
@@ -432,6 +462,7 @@ export default function App() {
       }
       await loadAlerts();
       await loadWatchlist();
+      void addActivity("info", "URL adicionada aos monitorados.");
     } catch (err) {
       const e = err as { message?: string; status?: number; details?: unknown };
       setError(
@@ -442,6 +473,7 @@ export default function App() {
           apiBase
         })
       );
+      void addActivity("error", "Falha ao monitorar URL.");
     } finally {
       setWatchSaving(false);
     }
@@ -456,6 +488,7 @@ export default function App() {
         throw { message: response?.error ?? "Falha ao remover monitoramento.", status: response?.status, details: response?.details };
       }
       setWatchlist((prev) => prev.filter((item) => item.id !== id));
+      void addActivity("info", "Monitorado removido.");
     } catch (err) {
       const e = err as { message?: string; status?: number; details?: unknown };
       setError(
@@ -466,6 +499,7 @@ export default function App() {
           apiBase
         })
       );
+      void addActivity("error", "Falha ao remover monitorado.");
     }
   }
 
@@ -477,6 +511,7 @@ export default function App() {
         throw { message: response?.error ?? "Falha ao confirmar alerta.", status: response?.status, details: response?.details };
       }
       setAlerts((prev) => prev.filter((item) => item.id !== id));
+      void addActivity("info", "Alerta confirmado.");
     } catch (err) {
       const e = err as { message?: string; status?: number; details?: unknown };
       setError(
@@ -487,6 +522,7 @@ export default function App() {
           apiBase
         })
       );
+      void addActivity("error", "Falha ao confirmar alerta.");
     }
   }
 
@@ -507,6 +543,7 @@ export default function App() {
     }
     setHistory([]);
     await loadMe();
+    void addActivity("warn", "Histórico limpo.");
   }
 
   async function handleClearWatchlist() {
@@ -525,6 +562,7 @@ export default function App() {
       return;
     }
     setWatchlist([]);
+    void addActivity("warn", "Monitorados limpos.");
   }
 
   async function handleClearAlerts() {
@@ -543,6 +581,7 @@ export default function App() {
       return;
     }
     setAlerts([]);
+    void addActivity("warn", "Alertas limpos.");
   }
 
   async function handleResetTestAccount() {
@@ -566,6 +605,7 @@ export default function App() {
       setAlerts([]);
       await loadMe();
       setApiBaseInfo("Conta de teste resetada com sucesso.");
+      void addActivity("warn", "Conta de teste resetada.");
     } catch (err) {
       const e = err as { message?: string; status?: number; details?: unknown };
       setError(
@@ -576,6 +616,7 @@ export default function App() {
           apiBase
         })
       );
+      void addActivity("error", "Falha ao resetar conta de teste.");
     } finally {
       setResetLoading(false);
     }
@@ -653,6 +694,13 @@ export default function App() {
     });
   }, []);
 
+  useEffect(() => {
+    chrome.storage.local.get("popupActivityLog").then((result) => {
+      const items = Array.isArray(result.popupActivityLog) ? (result.popupActivityLog as ActivityItem[]) : [];
+      setActivityLog(items);
+    });
+  }, []);
+
   function normalizeApiBase(value: string) {
     const raw = String(value ?? "").trim();
     if (!raw) return "http://localhost:3001";
@@ -696,8 +744,10 @@ export default function App() {
       await chrome.storage.local.set({ apiBase: normalized });
       setApiBase(normalized);
       setApiBaseInfo(`API configurada: ${normalized}`);
+      void addActivity("info", `API configurada para ${normalized}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Erro ao configurar API.");
+      void addActivity("error", "Falha ao configurar API.");
     } finally {
       setApiBaseSaving(false);
     }
@@ -1286,6 +1336,46 @@ export default function App() {
           {!historyLoading && history.length === 0 && (
             <div className="rounded-xl border border-dashed border-slate-800 bg-slate-900/60 p-2 text-xs text-slate-400">
               Sem análises salvas no Supabase.
+            </div>
+          )}
+        </div>
+      </section>
+
+      <section className="mt-3 rounded-2xl border border-slate-800 bg-[rgb(var(--panel))] p-3 max-sm:p-2">
+        <div className="flex items-center justify-between">
+          <p className="text-xs text-slate-300">Atividades recentes</p>
+          <button
+            onClick={() => void clearActivityLog()}
+            className="text-[11px] text-slate-400 underline-offset-2 hover:underline"
+          >
+            limpar
+          </button>
+        </div>
+        <div className="mt-2 space-y-2">
+          {activityLog.slice(0, 6).map((item) => (
+            <div key={item.id} className="rounded-xl border border-slate-800 bg-slate-900/60 p-2 text-xs">
+              <div className="flex items-center justify-between gap-2">
+                <span
+                  className={
+                    item.level === "error"
+                      ? "text-rose-300"
+                      : item.level === "warn"
+                      ? "text-amber-300"
+                      : "text-emerald-300"
+                  }
+                >
+                  {item.level.toUpperCase()}
+                </span>
+                <span className="text-[11px] text-slate-500">
+                  {new Date(item.timestamp).toLocaleTimeString("pt-BR")}
+                </span>
+              </div>
+              <p className="mt-1 text-slate-300">{item.message}</p>
+            </div>
+          ))}
+          {activityLog.length === 0 && (
+            <div className="rounded-xl border border-dashed border-slate-800 bg-slate-900/60 p-2 text-xs text-slate-400">
+              Sem atividades registradas.
             </div>
           )}
         </div>
