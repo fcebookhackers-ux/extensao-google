@@ -42,11 +42,7 @@ async function getAuthHeader() {
 async function parseApiResponse(response: Response) {
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || payload?.ok === false) {
-    const details =
-      payload?.details && typeof payload.details === "object"
-        ? JSON.stringify(payload.details)
-        : payload?.details;
-    const err = new Error(details ?? payload?.error ?? `API error ${response.status}`);
+    const err = new Error(payload?.error ?? `API error ${response.status}`);
     (err as any).status = response.status;
     (err as any).payload = payload;
     throw err;
@@ -81,6 +77,13 @@ async function getAlerts(limit = 10, onlyUnacked = true) {
   return parseApiResponse(response);
 }
 
+async function getMe() {
+  const base = await getApiBase();
+  const auth = await getAuthHeader();
+  const response = await fetch(`${base}/api/me`, { headers: { ...auth } });
+  return parseApiResponse(response);
+}
+
 async function addWatch(url: string) {
   const base = await getApiBase();
   const auth = await getAuthHeader();
@@ -103,6 +106,27 @@ async function removeWatch(id: number) {
   const base = await getApiBase();
   const auth = await getAuthHeader();
   const response = await fetch(`${base}/api/watchlist/${id}`, { method: "DELETE", headers: { ...auth } });
+  return parseApiResponse(response);
+}
+
+async function clearHistory() {
+  const base = await getApiBase();
+  const auth = await getAuthHeader();
+  const response = await fetch(`${base}/api/history`, { method: "DELETE", headers: { ...auth } });
+  return parseApiResponse(response);
+}
+
+async function clearWatchlist() {
+  const base = await getApiBase();
+  const auth = await getAuthHeader();
+  const response = await fetch(`${base}/api/watchlist`, { method: "DELETE", headers: { ...auth } });
+  return parseApiResponse(response);
+}
+
+async function clearAlerts() {
+  const base = await getApiBase();
+  const auth = await getAuthHeader();
+  const response = await fetch(`${base}/api/alerts`, { method: "DELETE", headers: { ...auth } });
   return parseApiResponse(response);
 }
 
@@ -175,7 +199,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         sendResponse({
           ok: false,
           error: error?.message ?? "History failed",
-          status: (error as any)?.status
+          status: (error as any)?.status,
+          details: (error as any)?.payload?.details
         })
       );
   }
@@ -186,7 +211,20 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         sendResponse({
           ok: false,
           error: error?.message ?? "Alerts failed",
-          status: (error as any)?.status
+          status: (error as any)?.status,
+          details: (error as any)?.payload?.details
+        })
+      );
+  }
+  if (message?.type === "GET_ME") {
+    getMe()
+      .then((data) => sendResponse({ ok: true, data }))
+      .catch((error) =>
+        sendResponse({
+          ok: false,
+          error: error?.message ?? "Me failed",
+          status: (error as any)?.status,
+          details: (error as any)?.payload?.details
         })
       );
   }
@@ -197,7 +235,44 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         sendResponse({
           ok: false,
           error: error?.message ?? "Watch failed",
-          status: (error as any)?.status
+          status: (error as any)?.status,
+          details: (error as any)?.payload?.details
+        })
+      );
+  }
+  if (message?.type === "CLEAR_HISTORY") {
+    clearHistory()
+      .then((data) => sendResponse({ ok: true, data }))
+      .catch((error) =>
+        sendResponse({
+          ok: false,
+          error: error?.message ?? "Clear history failed",
+          status: (error as any)?.status,
+          details: (error as any)?.payload?.details
+        })
+      );
+  }
+  if (message?.type === "CLEAR_WATCHLIST") {
+    clearWatchlist()
+      .then((data) => sendResponse({ ok: true, data }))
+      .catch((error) =>
+        sendResponse({
+          ok: false,
+          error: error?.message ?? "Clear watchlist failed",
+          status: (error as any)?.status,
+          details: (error as any)?.payload?.details
+        })
+      );
+  }
+  if (message?.type === "CLEAR_ALERTS") {
+    clearAlerts()
+      .then((data) => sendResponse({ ok: true, data }))
+      .catch((error) =>
+        sendResponse({
+          ok: false,
+          error: error?.message ?? "Clear alerts failed",
+          status: (error as any)?.status,
+          details: (error as any)?.payload?.details
         })
       );
   }
@@ -208,7 +283,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         sendResponse({
           ok: false,
           error: error?.message ?? "Watchlist failed",
-          status: (error as any)?.status
+          status: (error as any)?.status,
+          details: (error as any)?.payload?.details
         })
       );
   }
@@ -219,7 +295,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         sendResponse({
           ok: false,
           error: error?.message ?? "Remove watch failed",
-          status: (error as any)?.status
+          status: (error as any)?.status,
+          details: (error as any)?.payload?.details
         })
       );
   }
@@ -230,7 +307,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         sendResponse({
           ok: false,
           error: error?.message ?? "Ack failed",
-          status: (error as any)?.status
+          status: (error as any)?.status,
+          details: (error as any)?.payload?.details
         })
       );
   }

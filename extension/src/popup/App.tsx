@@ -48,6 +48,14 @@ type WatchItem = {
   created_at: string;
 };
 
+type MeResponse = {
+  plan: "free" | "pro" | "business";
+  dailyAnalysisLimit: number;
+  watchlistLimit: number;
+  analysesToday: number;
+  user?: { id: string; email: string | null };
+};
+
 const trendFallback = [0.2, 0.45, 0.3, 0.6, 0.5, 0.7, 0.62, 0.85];
 
 function normalizeTrend(values: number[]) {
@@ -65,6 +73,37 @@ function formatPrice(value: number) {
 function formatShipping(value: number) {
   if (value === 0) return "Grátis";
   return formatPrice(value);
+}
+
+function parseDetailsMaybeJson(details: unknown) {
+  if (details && typeof details === "object") return details as Record<string, unknown>;
+  if (typeof details !== "string") return null;
+  try {
+    const parsed = JSON.parse(details);
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+function friendlyErrorMessage(input: { error?: string; status?: number; details?: unknown; apiBase: string }) {
+  const { error, status, details, apiBase } = input;
+  const detailsObj = parseDetailsMaybeJson(details);
+  const detailsText = typeof details === "string" ? details : "";
+
+  if (status === 401) return "Sessão expirada. Faça login novamente.";
+  if (status === 429) {
+    const limit = detailsObj?.limit ?? "?";
+    const count = detailsObj?.count ?? "?";
+    return `Limite diário atingido: ${count}/${limit}.`;
+  }
+  if (status === 502 && /capturar produtos concorrentes/i.test(detailsText)) {
+    return "Falha no scraping desta página específica. Tente outro produto ou novamente em instantes.";
+  }
+  if (error === "Failed to fetch" || /Failed to fetch/i.test(detailsText)) {
+    return `Sem conexão com API em ${apiBase}.`;
+  }
+  return detailsText || error || "Erro inesperado.";
 }
 
 export default function App() {
@@ -92,6 +131,8 @@ export default function App() {
   const [apiBase, setApiBase] = useState("http://localhost:3001");
   const [apiBaseSaving, setApiBaseSaving] = useState(false);
   const [apiBaseInfo, setApiBaseInfo] = useState<string | null>(null);
+  const [me, setMe] = useState<MeResponse | null>(null);
+  const [meLoading, setMeLoading] = useState(false);
 
   const isAuthed = Boolean(authedEmail);
 
@@ -109,6 +150,7 @@ export default function App() {
     await chrome.storage.local.remove(["accessToken", "refreshToken", "userEmail"]);
     await chrome.runtime.sendMessage({ type: "CLEAR_ACCESS_TOKEN" });
     setAuthedEmail(null);
+    setMe(null);
   }
 
   async function initAuth() {
@@ -226,20 +268,28 @@ export default function App() {
       setPageStatus("valid");
       const response = await chrome.runtime.sendMessage({ type: "ANALYZE_PRODUCT", url });
       if (!response?.ok) {
-        if (response?.status === 429 && response?.details) {
-          const limit = response.details.limit ?? "?";
-          const count = response.details.count ?? "?";
-          throw new Error(`Limite diário atingido: ${count}/${limit}.`);
-        }
-        throw new Error(response?.error ?? "Falha ao analisar.");
+        throw {
+          message: response?.error ?? "Falha ao analisar.",
+          status: response?.status,
+          details: response?.details
+        };
       }
       setData(response.data);
       setLastUpdated(Date.now());
       await loadHistory();
       await loadAlerts();
       await loadWatchlist();
+      await loadMe();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Erro inesperado.");
+      const e = err as { message?: string; status?: number; details?: unknown };
+      setError(
+        friendlyErrorMessage({
+          error: e?.message,
+          status: e?.status,
+          details: e?.details,
+          apiBase
+        })
+      );
     } finally {
       setLoading(false);
     }
@@ -256,10 +306,21 @@ export default function App() {
         type: "GET_ANALYSIS_HISTORY",
         limit: 5
       });
-      if (!response?.ok) throw new Error(response?.error ?? "Falha ao buscar histórico.");
+      if (!response?.ok) {
+        throw { message: response?.error ?? "Falha ao buscar histórico.", status: response?.status, details: response?.details };
+      }
       setHistory(response?.data?.items ?? []);
     } catch (err) {
-      setError((prev) => prev ?? (err instanceof Error ? err.message : "Erro ao carregar histórico."));
+      const e = err as { message?: string; status?: number; details?: unknown };
+      setError((prev) =>
+        prev ??
+        friendlyErrorMessage({
+          error: e?.message,
+          status: e?.status,
+          details: e?.details,
+          apiBase
+        })
+      );
     } finally {
       setHistoryLoading(false);
     }
@@ -277,10 +338,21 @@ export default function App() {
         limit: 5,
         onlyUnacked: true
       });
-      if (!response?.ok) throw new Error(response?.error ?? "Falha ao carregar alertas.");
+      if (!response?.ok) {
+        throw { message: response?.error ?? "Falha ao carregar alertas.", status: response?.status, details: response?.details };
+      }
       setAlerts(response?.data?.items ?? []);
     } catch (err) {
-      setError((prev) => prev ?? (err instanceof Error ? err.message : "Erro ao carregar alertas."));
+      const e = err as { message?: string; status?: number; details?: unknown };
+      setError((prev) =>
+        prev ??
+        friendlyErrorMessage({
+          error: e?.message,
+          status: e?.status,
+          details: e?.details,
+          apiBase
+        })
+      );
     } finally {
       setAlertsLoading(false);
     }
@@ -294,13 +366,52 @@ export default function App() {
         return;
       }
       const response = await chrome.runtime.sendMessage({ type: "GET_WATCHLIST" });
-      if (!response?.ok) throw new Error(response?.error ?? "Falha ao carregar monitorados.");
+      if (!response?.ok) {
+        throw { message: response?.error ?? "Falha ao carregar monitorados.", status: response?.status, details: response?.details };
+      }
       const items = (response?.data?.items ?? []) as WatchItem[];
       setWatchlist(items.filter((item) => item.is_active !== false));
     } catch (err) {
-      setError((prev) => prev ?? (err instanceof Error ? err.message : "Erro ao carregar monitorados."));
+      const e = err as { message?: string; status?: number; details?: unknown };
+      setError((prev) =>
+        prev ??
+        friendlyErrorMessage({
+          error: e?.message,
+          status: e?.status,
+          details: e?.details,
+          apiBase
+        })
+      );
     } finally {
       setWatchlistLoading(false);
+    }
+  }
+
+  async function loadMe() {
+    setMeLoading(true);
+    try {
+      if (!isAuthed) {
+        setMe(null);
+        return;
+      }
+      const response = await chrome.runtime.sendMessage({ type: "GET_ME" });
+      if (!response?.ok) {
+        throw { message: response?.error ?? "Falha ao carregar uso.", status: response?.status, details: response?.details };
+      }
+      setMe(response?.data ?? null);
+    } catch (err) {
+      const e = err as { message?: string; status?: number; details?: unknown };
+      setError((prev) =>
+        prev ??
+        friendlyErrorMessage({
+          error: e?.message,
+          status: e?.status,
+          details: e?.details,
+          apiBase
+        })
+      );
+    } finally {
+      setMeLoading(false);
     }
   }
 
@@ -313,11 +424,21 @@ export default function App() {
       const url = tabs[0]?.url;
       if (!url) throw new Error("URL da aba ativa não encontrada.");
       const response = await chrome.runtime.sendMessage({ type: "ADD_WATCH_URL", url });
-      if (!response?.ok) throw new Error(response?.error ?? "Falha ao monitorar URL.");
+      if (!response?.ok) {
+        throw { message: response?.error ?? "Falha ao monitorar URL.", status: response?.status, details: response?.details };
+      }
       await loadAlerts();
       await loadWatchlist();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Erro inesperado ao monitorar.");
+      const e = err as { message?: string; status?: number; details?: unknown };
+      setError(
+        friendlyErrorMessage({
+          error: e?.message,
+          status: e?.status,
+          details: e?.details,
+          apiBase
+        })
+      );
     } finally {
       setWatchSaving(false);
     }
@@ -328,10 +449,20 @@ export default function App() {
     try {
       if (!isAuthed) throw new Error("Faça login para usar.");
       const response = await chrome.runtime.sendMessage({ type: "REMOVE_WATCH", id });
-      if (!response?.ok) throw new Error(response?.error ?? "Falha ao remover monitoramento.");
+      if (!response?.ok) {
+        throw { message: response?.error ?? "Falha ao remover monitoramento.", status: response?.status, details: response?.details };
+      }
       setWatchlist((prev) => prev.filter((item) => item.id !== id));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Erro ao remover monitoramento.");
+      const e = err as { message?: string; status?: number; details?: unknown };
+      setError(
+        friendlyErrorMessage({
+          error: e?.message,
+          status: e?.status,
+          details: e?.details,
+          apiBase
+        })
+      );
     }
   }
 
@@ -339,11 +470,76 @@ export default function App() {
     try {
       if (!isAuthed) throw new Error("Faça login para usar.");
       const response = await chrome.runtime.sendMessage({ type: "ACK_ALERT", id });
-      if (!response?.ok) throw new Error(response?.error ?? "Falha ao confirmar alerta.");
+      if (!response?.ok) {
+        throw { message: response?.error ?? "Falha ao confirmar alerta.", status: response?.status, details: response?.details };
+      }
       setAlerts((prev) => prev.filter((item) => item.id !== id));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Erro ao confirmar alerta.");
+      const e = err as { message?: string; status?: number; details?: unknown };
+      setError(
+        friendlyErrorMessage({
+          error: e?.message,
+          status: e?.status,
+          details: e?.details,
+          apiBase
+        })
+      );
     }
+  }
+
+  async function handleClearHistory() {
+    if (!confirm("Limpar todo histórico de análises?")) return;
+    setError(null);
+    const response = await chrome.runtime.sendMessage({ type: "CLEAR_HISTORY" });
+    if (!response?.ok) {
+      setError(
+        friendlyErrorMessage({
+          error: response?.error,
+          status: response?.status,
+          details: response?.details,
+          apiBase
+        })
+      );
+      return;
+    }
+    setHistory([]);
+    await loadMe();
+  }
+
+  async function handleClearWatchlist() {
+    if (!confirm("Desativar todos os itens monitorados?")) return;
+    setError(null);
+    const response = await chrome.runtime.sendMessage({ type: "CLEAR_WATCHLIST" });
+    if (!response?.ok) {
+      setError(
+        friendlyErrorMessage({
+          error: response?.error,
+          status: response?.status,
+          details: response?.details,
+          apiBase
+        })
+      );
+      return;
+    }
+    setWatchlist([]);
+  }
+
+  async function handleClearAlerts() {
+    if (!confirm("Limpar todos os alertas?")) return;
+    setError(null);
+    const response = await chrome.runtime.sendMessage({ type: "CLEAR_ALERTS" });
+    if (!response?.ok) {
+      setError(
+        friendlyErrorMessage({
+          error: response?.error,
+          status: response?.status,
+          details: response?.details,
+          apiBase
+        })
+      );
+      return;
+    }
+    setAlerts([]);
   }
 
   async function checkActiveTab() {
@@ -366,6 +562,7 @@ export default function App() {
       loadHistory();
       loadAlerts();
       loadWatchlist();
+      loadMe();
     });
   }, []);
 
@@ -374,6 +571,7 @@ export default function App() {
       loadHistory();
       loadAlerts();
       loadWatchlist();
+      loadMe();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authLoading, authedEmail]);
@@ -509,6 +707,25 @@ export default function App() {
         {!authLoading && isAuthed && (
           <div className="mt-2 rounded-xl border border-slate-800 bg-slate-900/60 p-2 text-xs text-slate-300">
             Logado como <span className="font-semibold text-slate-100">{authedEmail}</span>
+          </div>
+        )}
+
+        {!authLoading && isAuthed && (
+          <div className="mt-2 rounded-xl border border-slate-800 bg-slate-900/60 p-2 text-xs text-slate-300">
+            {meLoading && <p className="text-slate-400">Carregando uso...</p>}
+            {!meLoading && me && (
+              <div className="flex items-center justify-between gap-2">
+                <span>
+                  Plano <span className="font-semibold text-slate-100">{me.plan}</span>
+                </span>
+                <span>
+                  Uso hoje{" "}
+                  <span className="font-semibold text-slate-100">
+                    {me.analysesToday}/{me.dailyAnalysisLimit}
+                  </span>
+                </span>
+              </div>
+            )}
           </div>
         )}
 
@@ -781,12 +998,20 @@ export default function App() {
       <section className="mt-3 rounded-2xl border border-slate-800 bg-[rgb(var(--panel))] p-3 max-sm:p-2">
         <div className="flex items-center justify-between">
           <p className="text-xs text-slate-300">Monitorados</p>
-          <button
-            onClick={() => void loadWatchlist()}
-            className="text-[11px] text-slate-400 underline-offset-2 hover:underline"
-          >
-            atualizar
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => void loadWatchlist()}
+              className="text-[11px] text-slate-400 underline-offset-2 hover:underline"
+            >
+              atualizar
+            </button>
+            <button
+              onClick={() => void handleClearWatchlist()}
+              className="text-[11px] text-slate-400 underline-offset-2 hover:underline"
+            >
+              limpar
+            </button>
+          </div>
         </div>
         <div className="mt-2 space-y-2">
           {watchlistLoading && (
@@ -830,12 +1055,20 @@ export default function App() {
       <section className="mt-3 rounded-2xl border border-slate-800 bg-[rgb(var(--panel))] p-3 max-sm:p-2">
         <div className="flex items-center justify-between">
           <p className="text-xs text-slate-300">Alertas de preço</p>
-          <button
-            onClick={() => void loadAlerts()}
-            className="text-[11px] text-slate-400 underline-offset-2 hover:underline"
-          >
-            atualizar
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => void loadAlerts()}
+              className="text-[11px] text-slate-400 underline-offset-2 hover:underline"
+            >
+              atualizar
+            </button>
+            <button
+              onClick={() => void handleClearAlerts()}
+              className="text-[11px] text-slate-400 underline-offset-2 hover:underline"
+            >
+              limpar
+            </button>
+          </div>
         </div>
         <div className="mt-2 space-y-2">
           {alertsLoading && (
@@ -919,12 +1152,20 @@ export default function App() {
       <section className="mt-3 rounded-2xl border border-slate-800 bg-[rgb(var(--panel))] p-3 max-sm:p-2">
         <div className="flex items-center justify-between">
           <p className="text-xs text-slate-300">Histórico recente</p>
-          <button
-            onClick={() => void loadHistory()}
-            className="text-[11px] text-slate-400 underline-offset-2 hover:underline"
-          >
-            atualizar
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => void loadHistory()}
+              className="text-[11px] text-slate-400 underline-offset-2 hover:underline"
+            >
+              atualizar
+            </button>
+            <button
+              onClick={() => void handleClearHistory()}
+              className="text-[11px] text-slate-400 underline-offset-2 hover:underline"
+            >
+              limpar
+            </button>
+          </div>
         </div>
         <div className="mt-2 space-y-2">
           {historyLoading && (

@@ -172,6 +172,43 @@ app.get("/health", (_req, res) => {
   });
 });
 
+app.get("/api/me", async (req, res) => {
+  if (!supabaseAdmin) return res.status(500).json({ ok: false, error: "Supabase not configured" });
+  const user = await requireUser(req, res);
+  if (!user) return;
+
+  const { data: planRow, error: planError } = await supabaseAdmin
+    .from("market_user_plans")
+    .select("plan, daily_analysis_limit, watchlist_limit")
+    .eq("user_id", user.userId)
+    .maybeSingle();
+  if (planError) {
+    return res.status(500).json({ ok: false, error: "Failed to load plan", details: planError.message });
+  }
+
+  const { data: usageRow, error: usageError } = await supabaseAdmin
+    .from("market_usage_daily")
+    .select("analyses_count")
+    .eq("user_id", user.userId)
+    .eq("day", new Date().toISOString().slice(0, 10))
+    .maybeSingle();
+  if (usageError) {
+    return res.status(500).json({ ok: false, error: "Failed to load usage", details: usageError.message });
+  }
+
+  return res.json({
+    ok: true,
+    user: {
+      id: user.userId,
+      email: user.email
+    },
+    plan: planRow?.plan ?? "free",
+    dailyAnalysisLimit: Number(planRow?.daily_analysis_limit ?? 10),
+    watchlistLimit: Number(planRow?.watchlist_limit ?? 30),
+    analysesToday: Number(usageRow?.analyses_count ?? 0)
+  });
+});
+
 app.post("/api/watchlist", async (req, res) => {
   if (!supabaseAdmin) return res.status(500).json({ ok: false, error: "Supabase not configured" });
   const user = await requireUser(req, res);
@@ -246,6 +283,21 @@ app.delete("/api/watchlist/:id", async (req, res) => {
     .eq("user_id", user.userId);
   if (error) {
     return res.status(500).json({ ok: false, error: "Failed to disable watch", details: error.message });
+  }
+  return res.json({ ok: true });
+});
+
+app.delete("/api/watchlist", async (req, res) => {
+  if (!supabaseAdmin) return res.status(500).json({ ok: false, error: "Supabase not configured" });
+  const user = await requireUser(req, res);
+  if (!user) return;
+  const { error } = await supabaseAdmin
+    .from("market_watchlist")
+    .update({ is_active: false })
+    .eq("user_id", user.userId)
+    .eq("is_active", true);
+  if (error) {
+    return res.status(500).json({ ok: false, error: "Failed to clear watchlist", details: error.message });
   }
   return res.json({ ok: true });
 });
@@ -377,6 +429,20 @@ app.post("/api/alerts/:id/ack", async (req, res) => {
   return res.json({ ok: true });
 });
 
+app.delete("/api/alerts", async (req, res) => {
+  if (!supabaseAdmin) return res.status(500).json({ ok: false, error: "Supabase not configured" });
+  const user = await requireUser(req, res);
+  if (!user) return;
+  const { error } = await supabaseAdmin
+    .from("market_price_alerts")
+    .delete()
+    .eq("user_id", user.userId);
+  if (error) {
+    return res.status(500).json({ ok: false, error: "Failed to clear alerts", details: error.message });
+  }
+  return res.json({ ok: true });
+});
+
 app.get("/api/history", async (req, res) => {
   if (!supabaseAdmin) {
     return res.status(500).json({
@@ -408,6 +474,26 @@ app.get("/api/history", async (req, res) => {
   }
 
   return res.json({ ok: true, items: data ?? [] });
+});
+
+app.delete("/api/history", async (req, res) => {
+  if (!supabaseAdmin) {
+    return res.status(500).json({
+      ok: false,
+      error: "Supabase not configured",
+      details: "Configure SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in api environment."
+    });
+  }
+  const user = await requireUser(req, res);
+  if (!user) return;
+  const { error } = await supabaseAdmin
+    .from("market_competitor_analyses")
+    .delete()
+    .eq("user_id", user.userId);
+  if (error) {
+    return res.status(500).json({ ok: false, error: "Failed to clear history", details: error.message });
+  }
+  return res.json({ ok: true });
 });
 
 app.listen(port, () => {
