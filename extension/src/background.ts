@@ -1,12 +1,12 @@
-chrome.runtime.onInstalled.addListener(() => {
-  console.log("Zapfllow Intel installed");
-});
+chrome.runtime.onInstalled.addListener(() => {});
 
 const DEFAULT_API_BASE = "http://localhost:3001";
+const RAW_API_ALLOWLIST = (import.meta.env.VITE_API_ALLOWLIST as string | undefined) ?? DEFAULT_API_BASE;
 
 async function getApiBase() {
   const { apiBase } = await chrome.storage.local.get("apiBase");
-  return typeof apiBase === "string" && apiBase.length > 0 ? apiBase : DEFAULT_API_BASE;
+  const base = typeof apiBase === "string" && apiBase.length > 0 ? normalizeApiBase(apiBase) : DEFAULT_API_BASE;
+  return isAllowedApiBase(base) ? base : DEFAULT_API_BASE;
 }
 
 function normalizeApiBase(value: string) {
@@ -26,9 +26,15 @@ function normalizeApiBase(value: string) {
   return parsed.toString().replace(/\/$/, "");
 }
 
-function hostPermissionForBase(base: string) {
-  const parsed = new URL(base);
-  return `${parsed.protocol}//${parsed.host}/*`;
+function allowedApiBases() {
+  return RAW_API_ALLOWLIST.split(",")
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map((item) => normalizeApiBase(item));
+}
+
+function isAllowedApiBase(base: string) {
+  return allowedApiBases().includes(normalizeApiBase(base));
 }
 
 async function getAuthHeader() {
@@ -42,6 +48,11 @@ async function getAuthHeader() {
 async function parseApiResponse(response: Response) {
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || payload?.ok === false) {
+    if (response.status === 401) {
+      // Sessao invalida: limpa token local para forcar reauth no popup.
+      await chrome.storage.local.remove("accessToken");
+    }
+
     const err = new Error(payload?.error ?? `API error ${response.status}`);
     (err as any).status = response.status;
     (err as any).payload = payload;
@@ -151,25 +162,17 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "SET_API_BASE") {
     try {
       const base = normalizeApiBase(message.apiBase);
-      const hostPermission = hostPermissionForBase(base);
-
-      // If already granted, skip prompt.
-      chrome.permissions.contains({ origins: [hostPermission] }, (has) => {
-        const finish = (ok: boolean, error?: string) => {
-          if (!ok) return sendResponse({ ok: false, error: error ?? "Permissão negada para acessar a API." });
-          chrome.storage.local
-            .set({ apiBase: base })
-            .then(() => sendResponse({ ok: true, apiBase: base }))
-            .catch((err) => sendResponse({ ok: false, error: err?.message ?? "Failed to save apiBase" }));
-        };
-
-        if (has) return finish(true);
-
-        // Request at runtime (manifest must include optional_host_permissions + "permissions" permission).
-        chrome.permissions.request({ origins: [hostPermission] }, (granted) => {
-          finish(Boolean(granted));
+      if (!isAllowedApiBase(base)) {
+        return sendResponse({
+          ok: false,
+          error: `API base não permitida. Use uma das permitidas em VITE_API_ALLOWLIST: ${allowedApiBases().join(", ")}`
         });
-      });
+      }
+
+      chrome.storage.local
+        .set({ apiBase: base })
+        .then(() => sendResponse({ ok: true, apiBase: base }))
+        .catch((err) => sendResponse({ ok: false, error: err?.message ?? "Failed to save apiBase" }));
     } catch (err) {
       sendResponse({ ok: false, error: err instanceof Error ? err.message : "Falha ao configurar API base." });
     }
@@ -333,3 +336,5 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
   return true;
 });
+
+

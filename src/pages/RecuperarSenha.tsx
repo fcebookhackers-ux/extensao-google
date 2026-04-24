@@ -2,7 +2,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { AuthCardLayout } from "@/components/auth/AuthCardLayout";
 import { useToast } from "@/hooks/use-toast";
-import { supabase } from "@/integrations/supabase/client";
+import { authClient } from "@/integrations/supabase/client";
 import { enforceRateLimit, formatResetTime } from "@/lib/rate-limiter";
 import { RateLimitError } from "@/types/rate-limit";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -40,7 +40,10 @@ export default function RecuperarSenha() {
     }
 
     const redirectTo = `${window.location.origin}/redefinir-senha`;
-    const { error } = await supabase.auth.resetPasswordForEmail(values.email, { redirectTo });
+    const { error } = await authClient.forgetPassword({
+      email: values.email,
+      redirectTo,
+    });
 
     if (error) {
       toast({ title: "Não foi possível enviar", description: error.message, variant: "destructive" });
@@ -79,4 +82,3 @@ export default function RecuperarSenha() {
     </AuthCardLayout>
   );
 }
-

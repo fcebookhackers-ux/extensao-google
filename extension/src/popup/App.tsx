@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { supabase } from "../supabaseClient";
 
 type AnalyzeItem = {
@@ -113,6 +113,18 @@ function friendlyErrorMessage(input: { error?: string; status?: number; details?
   return detailsText || error || "Erro inesperado.";
 }
 
+function isValidEmail(value: string) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
+function signupPasswordError(value: string): string | null {
+  if (value.length < 8) return "Senha deve ter pelo menos 8 caracteres.";
+  if (!/[A-Z]/.test(value)) return "Senha deve ter ao menos 1 letra maiúscula.";
+  if (!/[a-z]/.test(value)) return "Senha deve ter ao menos 1 letra minúscula.";
+  if (!/[0-9]/.test(value)) return "Senha deve ter ao menos 1 número.";
+  return null;
+}
+
 export default function App() {
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<AnalyzeResponse | null>(null);
@@ -145,14 +157,40 @@ export default function App() {
   const [resetLoading, setResetLoading] = useState(false);
   const [activityLog, setActivityLog] = useState<ActivityItem[]>([]);
   const [activityFilter, setActivityFilter] = useState<"all" | "error" | "warn" | "info">("all");
+  const [activeTabUrl, setActiveTabUrl] = useState<string | null>(null);
+  const autoAnalyzeTimerRef = useRef<number | null>(null);
+  const autoAnalyzeLastByUrlRef = useRef<Record<string, number>>({});
 
   const isAuthed = Boolean(authedEmail);
+  const SESSION_MAX_AGE_MS = 12 * 60 * 60 * 1000;
+  const AUTO_ANALYZE_DEBOUNCE_MS = 1200;
+  const AUTO_ANALYZE_COOLDOWN_MS = 15 * 1000;
 
-  async function persistSession(session: { access_token: string; refresh_token: string }, email?: string | null) {
+  function jwtExpMs(token: string): number | null {
+    try {
+      const parts = token.split(".");
+      if (parts.length < 2) return null;
+      const payload = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")));
+      const exp = Number(payload?.exp);
+      if (!Number.isFinite(exp)) return null;
+      return exp * 1000;
+    } catch {
+      return null;
+    }
+  }
+
+  function isExpired(accessToken: string, issuedAt: number | null): boolean {
+    const expMs = jwtExpMs(accessToken);
+    if (expMs && Date.now() >= expMs) return true;
+    if (issuedAt !== null && Date.now() - issuedAt > SESSION_MAX_AGE_MS) return true;
+    return false;
+  }
+
+  async function persistSession(session: { access_token: string }, email?: string | null) {
     await chrome.storage.local.set({
       accessToken: session.access_token,
-      refreshToken: session.refresh_token,
-      userEmail: email ?? null
+      userEmail: email ?? null,
+      sessionIssuedAt: Date.now()
     });
     await chrome.runtime.sendMessage({ type: "SET_ACCESS_TOKEN", accessToken: session.access_token });
     setAuthedEmail(email ?? null);
@@ -160,7 +198,7 @@ export default function App() {
   }
 
   async function clearSession() {
-    await chrome.storage.local.remove(["accessToken", "refreshToken", "userEmail"]);
+    await chrome.storage.local.remove(["accessToken", "refreshToken", "userEmail", "sessionIssuedAt"]);
     await chrome.runtime.sendMessage({ type: "CLEAR_ACCESS_TOKEN" });
     setAuthedEmail(null);
     setMe(null);
@@ -189,32 +227,20 @@ export default function App() {
   async function initAuth() {
     setAuthLoading(true);
     try {
-      const stored = await chrome.storage.local.get(["accessToken", "refreshToken", "userEmail"]);
+      const stored = await chrome.storage.local.get(["accessToken", "userEmail", "sessionIssuedAt"]);
       const accessToken = typeof stored.accessToken === "string" ? stored.accessToken : "";
-      const refreshToken = typeof stored.refreshToken === "string" ? stored.refreshToken : "";
       const userEmail = typeof stored.userEmail === "string" ? stored.userEmail : null;
+      const issuedAt = Number.isFinite(Number(stored.sessionIssuedAt)) ? Number(stored.sessionIssuedAt) : null;
 
-      // If we have an access token, assume logged in and let API validate it.
-      if (accessToken) {
+      // Access token válido => segue autenticado.
+      if (accessToken && !isExpired(accessToken, issuedAt)) {
         setAuthedEmail(userEmail);
         return;
       }
 
-      // Try to refresh if possible.
-      if (refreshToken) {
-        const { data, error: refreshError } = await supabase.auth.refreshSession({
-          refresh_token: refreshToken
-        });
-        if (!refreshError && data?.session) {
-          await persistSession(
-            { access_token: data.session.access_token, refresh_token: data.session.refresh_token },
-            data.session.user.email ?? userEmail
-          );
-          return;
-        }
-      }
-
-      setAuthedEmail(null);
+      // Sessão expirada/inválida => logout obrigatório (sem refresh automático).
+      await clearSession();
+      setAuthInfo("Sessão expirada. Faça login novamente.");
     } finally {
       setAuthLoading(false);
     }
@@ -225,16 +251,18 @@ export default function App() {
     setAuthInfo(null);
     setAuthLoading(true);
     try {
+      const email = loginEmail.trim();
+      if (!isValidEmail(email)) throw new Error("Informe um email válido.");
       const { data, error: signInError } = await supabase.auth.signInWithPassword({
-        email: loginEmail.trim(),
+        email,
         password: loginPassword
       });
       if (signInError || !data?.session) {
         throw new Error(signInError?.message ?? "Falha no login.");
       }
       await persistSession(
-        { access_token: data.session.access_token, refresh_token: data.session.refresh_token },
-        data.session.user.email ?? loginEmail.trim()
+        { access_token: data.session.access_token },
+        data.session.user.email ?? email
       );
       setLoginPassword("");
     } catch (err) {
@@ -261,6 +289,9 @@ export default function App() {
     setAuthLoading(true);
     try {
       const email = loginEmail.trim();
+      if (!isValidEmail(email)) throw new Error("Informe um email válido.");
+      const passwordError = signupPasswordError(loginPassword);
+      if (passwordError) throw new Error(passwordError);
       const { data, error: signUpError } = await supabase.auth.signUp({
         email,
         password: loginPassword
@@ -270,7 +301,7 @@ export default function App() {
       // If email confirmation is enabled, Supabase may not return a session yet.
       if (data?.session) {
         await persistSession(
-          { access_token: data.session.access_token, refresh_token: data.session.refresh_token },
+          { access_token: data.session.access_token },
           data.user?.email ?? email
         );
         setLoginPassword("");
@@ -280,20 +311,33 @@ export default function App() {
         setAuthMode("login");
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Erro no cadastro.");
+      const rawMessage = err instanceof Error ? err.message : "Erro no cadastro.";
+      const safeMessage =
+        /password|senha|email|credencial|invalid|inválid/i.test(rawMessage)
+          ? rawMessage
+          : "Falha ao criar conta. Revise os dados e tente novamente.";
+      setError(safeMessage);
     } finally {
       setAuthLoading(false);
     }
   }
 
-  async function handleAnalyze() {
-    setLoading(true);
-    setError(null);
+  async function getActiveTabUrl() {
+    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    const url = tabs[0]?.url;
+    if (!url) throw new Error("URL da aba ativa não encontrada.");
+    return url;
+  }
+
+  async function handleAnalyze(options?: { silent?: boolean; url?: string }) {
+    const silent = Boolean(options?.silent);
+    if (!silent) {
+      setLoading(true);
+      setError(null);
+    }
     try {
       if (!isAuthed) throw new Error("Faça login para usar.");
-      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-      const url = tabs[0]?.url;
-      if (!url) throw new Error("URL da aba ativa não encontrada.");
+      const url = options?.url ?? (await getActiveTabUrl());
       if (!isSupportedUrl(url)) {
         setPageStatus("invalid");
         throw new Error("Esta página não é compatível.");
@@ -322,10 +366,10 @@ export default function App() {
         details: e?.details,
         apiBase
       });
-      setError(msg);
-      void addActivity("error", `Falha na análise: ${msg}`);
+      if (!silent) setError(msg);
+      void addActivity(silent ? "warn" : "error", `Falha na análise: ${msg}`);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }
 
@@ -634,11 +678,15 @@ export default function App() {
       const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
       const url = tabs[0]?.url;
       if (!url) {
+        setActiveTabUrl(null);
         setPageStatus("unknown");
         return;
       }
-      setPageStatus(isSupportedUrl(url) ? "valid" : "invalid");
+      const supported = isSupportedUrl(url);
+      setPageStatus(supported ? "valid" : "invalid");
+      setActiveTabUrl(supported ? url : null);
     } catch {
+      setActiveTabUrl(null);
       setPageStatus("unknown");
     }
   }
@@ -654,6 +702,23 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    const onActivated = () => {
+      void checkActiveTab();
+    };
+    const onUpdated = (_tabId: number, changeInfo: chrome.tabs.TabChangeInfo) => {
+      if (changeInfo.url || changeInfo.status === "complete") {
+        void checkActiveTab();
+      }
+    };
+    chrome.tabs.onActivated.addListener(onActivated);
+    chrome.tabs.onUpdated.addListener(onUpdated);
+    return () => {
+      chrome.tabs.onActivated.removeListener(onActivated);
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+    };
+  }, []);
+
+  useEffect(() => {
     if (!authLoading && isAuthed) {
       loadHistory();
       loadAlerts();
@@ -662,6 +727,72 @@ export default function App() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authLoading, authedEmail]);
+
+  useEffect(() => {
+    if (authLoading || !isAuthed || pageStatus !== "valid" || loading || !activeTabUrl) return;
+
+    if (autoAnalyzeTimerRef.current !== null) {
+      window.clearTimeout(autoAnalyzeTimerRef.current);
+    }
+
+    autoAnalyzeTimerRef.current = window.setTimeout(() => {
+      const now = Date.now();
+      const lastAt = autoAnalyzeLastByUrlRef.current[activeTabUrl] ?? 0;
+      if (now - lastAt < AUTO_ANALYZE_COOLDOWN_MS) return;
+      autoAnalyzeLastByUrlRef.current[activeTabUrl] = now;
+      void handleAnalyze({ silent: true, url: activeTabUrl });
+    }, AUTO_ANALYZE_DEBOUNCE_MS);
+
+    return () => {
+      if (autoAnalyzeTimerRef.current !== null) {
+        window.clearTimeout(autoAnalyzeTimerRef.current);
+        autoAnalyzeTimerRef.current = null;
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authLoading, isAuthed, pageStatus, loading, activeTabUrl]);
+
+  useEffect(() => {
+    if (!isAuthed) return;
+
+    const timer = setInterval(async () => {
+      const stored = await chrome.storage.local.get(["accessToken", "sessionIssuedAt"]);
+      const token = typeof stored.accessToken === "string" ? stored.accessToken : "";
+      const issuedAt = Number.isFinite(Number(stored.sessionIssuedAt)) ? Number(stored.sessionIssuedAt) : null;
+      if (!token || isExpired(token, issuedAt)) {
+        await clearSession();
+        setAuthInfo("Sessão expirada. Faça login novamente.");
+      }
+    }, 60 * 1000);
+
+    return () => clearInterval(timer);
+  }, [isAuthed]);
+
+  useEffect(() => {
+    if (!isAuthed) return;
+    const listener = (
+      changes: { [key: string]: chrome.storage.StorageChange },
+      areaName: string
+    ) => {
+      if (areaName !== "local") return;
+      const accessChanged = Object.prototype.hasOwnProperty.call(changes, "accessToken");
+      const issuedChanged = Object.prototype.hasOwnProperty.call(changes, "sessionIssuedAt");
+      if (!accessChanged && !issuedChanged) return;
+
+      const token = (changes.accessToken?.newValue as string | undefined) ?? null;
+      const issuedRaw = changes.sessionIssuedAt?.newValue;
+      const issuedAt =
+        typeof issuedRaw === "number" && Number.isFinite(issuedRaw) ? issuedRaw : null;
+
+      if (!token || isExpired(token, issuedAt)) {
+        void clearSession();
+        setAuthInfo("Sessão expirada. Faça login novamente.");
+      }
+    };
+
+    chrome.storage.onChanged.addListener(listener);
+    return () => chrome.storage.onChanged.removeListener(listener);
+  }, [isAuthed]);
 
   useEffect(() => {
     chrome.storage.local.get("popupTheme").then((result) => {
@@ -702,6 +833,8 @@ export default function App() {
     });
   }, []);
 
+    const API_ALLOWLIST_RAW = (import.meta.env.VITE_API_ALLOWLIST as string | undefined) ?? "http://localhost:3001";
+
   function normalizeApiBase(value: string) {
     const raw = String(value ?? "").trim();
     if (!raw) return "http://localhost:3001";
@@ -710,7 +843,7 @@ export default function App() {
     try {
       parsed = new URL(raw);
     } catch {
-      throw new Error("API base inválida. Ex: http://144.22.199.29:3001");
+      throw new Error("API base inválida. Ex: http://localhost:3001");
     }
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
       throw new Error("API base deve ser http ou https.");
@@ -718,9 +851,15 @@ export default function App() {
     return parsed.toString().replace(/\/$/, "");
   }
 
-  function hostPermissionForBase(base: string) {
-    const parsed = new URL(base);
-    return `${parsed.protocol}//${parsed.host}/*`;
+  function allowedApiBases() {
+    return API_ALLOWLIST_RAW.split(",")
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .map((item) => normalizeApiBase(item));
+  }
+
+  function isAllowedApiBase(base: string) {
+    return allowedApiBases().includes(normalizeApiBase(base));
   }
 
   async function handleSaveApiBase() {
@@ -729,17 +868,8 @@ export default function App() {
     setError(null);
     try {
       const normalized = normalizeApiBase(apiBase);
-      const origin = hostPermissionForBase(normalized);
-
-      const hasPerm: boolean = await new Promise((resolve) => {
-        chrome.permissions.contains({ origins: [origin] }, (result) => resolve(Boolean(result)));
-      });
-
-      if (!hasPerm) {
-        const granted: boolean = await new Promise((resolve) => {
-          chrome.permissions.request({ origins: [origin] }, (result) => resolve(Boolean(result)));
-        });
-        if (!granted) throw new Error("Permissão negada para acessar a API nesse domínio.");
+      if (!isAllowedApiBase(normalized)) {
+        throw new Error(`API base não permitida. Permitidas: ${allowedApiBases().join(", ")}`);
       }
 
       await chrome.storage.local.set({ apiBase: normalized });
@@ -753,7 +883,6 @@ export default function App() {
       setApiBaseSaving(false);
     }
   }
-
   const statusCopy =
     pageStatus === "valid"
       ? "Página compatível"
@@ -772,6 +901,13 @@ export default function App() {
   const filteredActivity = activityLog.filter((item) =>
     activityFilter === "all" ? true : item.level === activityFilter
   );
+  const trimmedLoginEmail = loginEmail.trim();
+  const signupPwdError = authMode === "signup" ? signupPasswordError(loginPassword) : null;
+  const canSubmitAuth =
+    !authLoading &&
+    isValidEmail(trimmedLoginEmail) &&
+    loginPassword.length > 0 &&
+    (authMode === "login" || !signupPwdError);
 
   async function openExternal(url: string) {
     try {
@@ -782,7 +918,7 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-[420px] w-[360px] p-4 sm:w-[380px] max-sm:w-[320px] max-sm:p-3">
+    <div className="popup-shell min-h-[420px] w-[360px] p-4 sm:w-[380px] max-sm:w-[320px] max-sm:p-3">
       <section className="mb-3 rounded-2xl border border-slate-800 bg-[rgb(var(--panel))] p-3">
         <div className="flex items-center justify-between">
           <p className="text-xs text-slate-300">Conta</p>
@@ -879,6 +1015,8 @@ export default function App() {
               value={loginEmail}
               onChange={(e) => setLoginEmail(e.target.value)}
               placeholder="email"
+              type="email"
+              autoComplete="email"
               className="w-full rounded-xl border border-slate-800 bg-slate-900/60 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500"
             />
             <input
@@ -886,11 +1024,20 @@ export default function App() {
               onChange={(e) => setLoginPassword(e.target.value)}
               placeholder="senha"
               type="password"
+              autoComplete={authMode === "signup" ? "new-password" : "current-password"}
               className="w-full rounded-xl border border-slate-800 bg-slate-900/60 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500"
             />
+            {authMode === "signup" && (
+              <p className="text-[11px] text-slate-500">
+                Senha: 8+ caracteres, com maiúscula, minúscula e número.
+              </p>
+            )}
+            {authMode === "signup" && signupPwdError && (
+              <p className="text-[11px] text-rose-300">{signupPwdError}</p>
+            )}
             <button
               onClick={() => void (authMode === "login" ? handleLogin() : handleSignup())}
-              disabled={authLoading || !loginEmail.trim() || !loginPassword}
+              disabled={!canSubmitAuth}
               className="w-full rounded-xl bg-[rgb(var(--accent))] px-3 py-2 text-sm font-semibold text-slate-950 disabled:cursor-not-allowed disabled:opacity-70"
             >
               {authMode === "login" ? "Entrar" : "Criar conta"}
@@ -930,10 +1077,21 @@ export default function App() {
 
         <div className="relative">
           <div className="flex items-start justify-between gap-3">
-            <div>
+            <div className="relative isolate">
+              <div
+                className="pointer-events-none absolute -left-6 -top-4 h-36 w-36 rounded-full"
+                style={{
+                  backgroundImage:
+                    "radial-gradient(circle at center, rgba(34,197,94,0.22) 0 64%, rgba(15,23,42,0) 70%), repeating-radial-gradient(circle at center, rgba(74,222,128,0.5) 0 1px, rgba(0,0,0,0) 1px 18px), linear-gradient(0deg, rgba(74,222,128,0.5), rgba(74,222,128,0.5)), linear-gradient(90deg, rgba(74,222,128,0.5), rgba(74,222,128,0.5)), conic-gradient(from 250deg at 50% 50%, rgba(250,204,21,0.56) 0 26deg, rgba(250,204,21,0) 26deg 360deg)",
+                  opacity: theme === "light" ? 1 : 0.3,
+                  backgroundSize: "100% 100%, 100% 100%, 1px 100%, 100% 1px, 100% 100%",
+                  backgroundPosition: "center, center, center, center, center",
+                  backgroundRepeat: "no-repeat"
+                }}
+              />
               <div className="flex items-center gap-2">
                 <p className="text-[10px] font-semibold uppercase tracking-[0.35em] text-slate-400">
-                  Zapfllow Intel
+                  ModaRadar
                 </p>
                 {unackedAlertsCount > 0 && (
                   <span className="animate-pulse-soft rounded-full border border-rose-700/60 bg-rose-900/50 px-2 py-0.5 text-[10px] font-semibold text-rose-200">
@@ -985,7 +1143,7 @@ export default function App() {
             )}
           </div>
           <button
-            onClick={handleAnalyze}
+            onClick={() => void handleAnalyze()}
             disabled={loading || pageStatus === "invalid"}
             className="mt-4 w-full rounded-xl bg-[rgb(var(--accent))] px-3 py-2 text-sm font-semibold text-slate-950 transition hover:-translate-y-[1px] hover:shadow-lg hover:shadow-amber-500/30 disabled:cursor-not-allowed disabled:opacity-70"
           >
@@ -1032,7 +1190,7 @@ export default function App() {
         <div className="flex items-center justify-between">
           <h2 className="flex items-center gap-2 text-sm font-semibold">
             <StackIcon className="h-4 w-4 text-slate-400" />
-            Top 3 similares
+            Tabela de concorrentes
           </h2>
           <span className="rounded-full bg-slate-800 px-2 py-1 text-[10px] text-slate-300">
             {data ? `${data.items.length} itens` : "0 itens"}
@@ -1059,42 +1217,45 @@ export default function App() {
               ))}
             </>
           )}
-          {!loading &&
-            (data?.items ?? []).slice(0, 3).map((row) => (
-              <div
-                key={row.name}
-                className="animate-float-in rounded-xl border border-slate-800 bg-slate-900/60 p-2 text-xs"
-              >
-                <div className="flex items-center justify-between">
-                  <div className="min-w-0">
-                    <span className="block truncate font-semibold text-slate-100">{row.name}</span>
-                    {row.url && (
-                      <button
-                        onClick={() => void openExternal(String(row.url))}
-                        className="mt-0.5 text-[10px] text-slate-400 underline-offset-2 hover:underline"
-                      >
-                        abrir
-                      </button>
-                    )}
-                  </div>
-                  <span className="text-emerald-300">{formatPrice(row.price)}</span>
-                </div>
-                <div className="mt-1 flex items-center justify-between text-slate-300">
-                  <span className="flex items-center gap-1">
-                    <TruckIcon className="h-3 w-3 text-slate-500" />
-                    {formatShipping(row.shipping)}
-                  </span>
-                  <span className="flex items-center gap-1">
-                    <CartIcon className="h-3 w-3 text-slate-500" />
-                    {row.sales}
-                  </span>
-                  <span className="flex items-center gap-1">
-                    <StarIcon className="h-3 w-3 text-amber-300" />
-                    {row.rating}
-                  </span>
-                </div>
-              </div>
-            ))}
+          {!loading && data && (
+            <div className="animate-float-in overflow-x-auto rounded-xl border border-slate-800 bg-slate-900/60">
+              <table className="min-w-[560px] w-full text-xs">
+                <thead>
+                  <tr className="border-b border-slate-800 text-slate-400">
+                    <th className="px-2 py-2 text-left font-semibold">Produto</th>
+                    <th className="px-2 py-2 text-right font-semibold">Preço</th>
+                    <th className="px-2 py-2 text-right font-semibold">Frete</th>
+                    <th className="px-2 py-2 text-right font-semibold">Vendas</th>
+                    <th className="px-2 py-2 text-right font-semibold">Avaliação</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.items.slice(0, 20).map((row, idx) => (
+                    <tr
+                      key={`${row.name}-${idx}`}
+                      className="border-b border-slate-800/60 align-top last:border-b-0"
+                    >
+                      <td className="max-w-[230px] px-2 py-2">
+                        <span className="block truncate font-semibold text-slate-100">{row.name}</span>
+                        {row.url && (
+                          <button
+                            onClick={() => void openExternal(String(row.url))}
+                            className="mt-0.5 text-[10px] text-slate-400 underline-offset-2 hover:underline"
+                          >
+                            abrir
+                          </button>
+                        )}
+                      </td>
+                      <td className="px-2 py-2 text-right text-emerald-300">{formatPrice(row.price)}</td>
+                      <td className="px-2 py-2 text-right text-slate-300">{formatShipping(row.shipping)}</td>
+                      <td className="px-2 py-2 text-right text-slate-300">{row.sales}</td>
+                      <td className="px-2 py-2 text-right text-amber-300">{row.rating}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
           {!data && !loading && !error && (
             <div className="rounded-xl border border-dashed border-slate-800 bg-slate-950/60 p-3 text-xs text-slate-400">
               {pageStatus === "invalid"
@@ -1505,3 +1666,7 @@ function PulseIcon({ className }: { className?: string }) {
     </svg>
   );
 }
+
+
+
+

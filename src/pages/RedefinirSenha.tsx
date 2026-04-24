@@ -4,11 +4,11 @@ import { Input } from "@/components/ui/input";
 import { AuthCardLayout } from "@/components/auth/AuthCardLayout";
 import { PasswordStrength } from "@/components/auth/PasswordStrength";
 import { useToast } from "@/hooks/use-toast";
-import { supabase } from "@/integrations/supabase/client";
+import { authClient } from "@/integrations/supabase/client";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Eye, EyeOff, Loader2 } from "lucide-react";
 import { useForm } from "react-hook-form";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { z } from "zod";
 import { passwordPolicySchema } from "@/lib/password-policy";
 
@@ -27,10 +27,13 @@ type FormValues = z.infer<typeof schema>;
 export default function RedefinirSenha() {
   const { toast } = useToast();
   const navigate = useNavigate();
-  const { token } = useParams();
+  const [searchParams] = useSearchParams();
   const [showPassword, setShowPassword] = React.useState(false);
   const [showConfirm, setShowConfirm] = React.useState(false);
   const [ready, setReady] = React.useState(false);
+
+  // Better Auth envia o token como query param: ?token=xxx
+  const token = searchParams.get("token");
 
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
@@ -38,55 +41,37 @@ export default function RedefinirSenha() {
   });
 
   React.useEffect(() => {
-    let cancelled = false;
-
-    const init = async () => {
-      try {
-        // Suporta /redefinir-senha/:token (token_hash) e também o link padrão do Supabase (hash na URL).
-        if (token) {
-          const { error } = await supabase.auth.verifyOtp({ token_hash: token, type: "recovery" });
-          if (error) throw error;
-        }
-
-        const { data } = await supabase.auth.getSession();
-        if (!data.session) {
-          toast({
-            title: "Link inválido ou expirado",
-            description: "Abra o link mais recente enviado por email para redefinir sua senha.",
-            variant: "destructive",
-          });
-        }
-      } catch (e: any) {
-        toast({ title: "Não foi possível validar o link", description: e?.message, variant: "destructive" });
-      } finally {
-        if (!cancelled) setReady(true);
-      }
-    };
-
-    init();
-    return () => {
-      cancelled = true;
-    };
+    if (!token) {
+      toast({
+        title: "Link inválido ou expirado",
+        description: "Abra o link mais recente enviado por email para redefinir sua senha.",
+        variant: "destructive",
+      });
+    }
+    setReady(true);
   }, [token, toast]);
 
   const onSubmit = async (values: FormValues) => {
-    const { data } = await supabase.auth.getSession();
-    if (!data.session) {
+    if (!token) {
       toast({
-        title: "Sessão não encontrada",
+        title: "Token não encontrado",
         description: "Peça um novo link de recuperação e tente novamente.",
         variant: "destructive",
       });
       return;
     }
 
-    const { error } = await supabase.auth.updateUser({ password: values.password });
+    const { error } = await authClient.resetPassword({
+      newPassword: values.password,
+      token,
+    });
+
     if (error) {
       toast({ title: "Não foi possível redefinir", description: error.message, variant: "destructive" });
       return;
     }
 
-    await supabase.auth.signOut();
+    await authClient.signOut();
     navigate("/login", {
       replace: true,
       state: { toast: { title: "Senha alterada com sucesso!", description: "Faça login com sua nova senha." } },

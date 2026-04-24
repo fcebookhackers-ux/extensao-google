@@ -37,7 +37,6 @@ function ensureButton(): void {
       type: "ANALYZE_PRODUCT",
       url: window.location.href
     });
-    console.log("Analyze response:", response);
   });
 
   document.body.appendChild(button);
@@ -46,3 +45,4 @@ function ensureButton(): void {
 const observer = new MutationObserver(() => ensureButton());
 observer.observe(document.documentElement, { childList: true, subtree: true });
 ensureButton();
+

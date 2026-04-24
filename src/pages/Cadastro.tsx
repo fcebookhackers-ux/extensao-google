@@ -10,7 +10,7 @@ import { AuthCardLayout } from "@/components/auth/AuthCardLayout";
 import { GoogleAuthButton } from "@/components/auth/GoogleAuthButton";
 import { PasswordStrength } from "@/components/auth/PasswordStrength";
 import { useToast } from "@/hooks/use-toast";
-import { supabase } from "@/integrations/supabase/client";
+import { authClient } from "@/integrations/supabase/client";
 import { useAuth } from "@/providers/AuthProvider";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Eye, EyeOff, Loader2 } from "lucide-react";
@@ -82,24 +82,15 @@ export default function Cadastro() {
   }, [user, navigate]);
 
   const onSubmit = async (values: FormValues) => {
-    const redirectUrl = `${window.location.origin}/dashboard/inicio`;
-    const { error } = await supabase.auth.signUp({
+    const { error } = await authClient.signUp.email({
       email: values.email,
       password: values.password,
-      options: {
-        emailRedirectTo: redirectUrl,
-        data: {
-          full_name: values.fullName,
-          company_name: values.companyName || undefined,
-          cnpj: values.cnpj || undefined,
-          phone: values.phone || undefined,
-          segment: values.segment || undefined,
-        },
-      },
+      name: values.fullName,
+      callbackURL: "/dashboard/inicio",
     });
 
     if (error) {
-      const isDuplicate = /already\sregistered|User\salready\sregistered|already\sexists/i.test(error.message);
+      const isDuplicate = /already\sregistered|already\sexists/i.test(error.message);
       toast({
         title: "Não foi possível cadastrar",
         description: isDuplicate ? "Este email já está cadastrado." : error.message,
@@ -108,9 +99,9 @@ export default function Cadastro() {
       return;
     }
 
-    // Se a confirmação de e-mail estiver desativada no Supabase, o usuário já estará logado.
-    const { data } = await supabase.auth.getSession();
-    if (data.session) {
+    // Verifica se já está logado após o cadastro
+    const { data: sessionData } = await authClient.getSession();
+    if (sessionData?.session) {
       toast({ title: "Conta criada!", description: "Bem-vindo(a)!" });
       navigate("/dashboard/inicio", { replace: true });
       return;
@@ -118,10 +109,13 @@ export default function Cadastro() {
 
     toast({
       title: "Cadastro iniciado",
-      description: "Verifique seu email para confirmar a conta (se a confirmação estiver ativa).",
+      description: "Verifique seu email para confirmar a conta.",
     });
 
-    navigate("/login", { replace: true, state: { toast: { title: "Quase lá", description: "Confirme o email para entrar." } } });
+    navigate("/login", {
+      replace: true,
+      state: { toast: { title: "Quase lá", description: "Confirme o email para entrar." } },
+    });
   };
 
   const nextStep = async () => {
@@ -132,10 +126,17 @@ export default function Cadastro() {
 
   const onGoogle = async () => {
     setOauthLoading(true);
-    const redirectTo = `${window.location.origin}/dashboard/inicio`;
-    const { error } = await supabase.auth.signInWithOAuth({ provider: "google", options: { redirectTo } });
-    setOauthLoading(false);
-    if (error) toast({ title: "Falha no Google", description: error.message, variant: "destructive" });
+    try {
+      await authClient.signIn.social({
+        provider: "google",
+        callbackURL: "/dashboard/inicio",
+      });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Erro desconhecido";
+      toast({ title: "Falha no Google", description: message, variant: "destructive" });
+    } finally {
+      setOauthLoading(false);
+    }
   };
 
   return (

@@ -6,7 +6,7 @@ import { Separator } from "@/components/ui/separator";
 import { AuthCardLayout } from "@/components/auth/AuthCardLayout";
 import { GoogleAuthButton } from "@/components/auth/GoogleAuthButton";
 import { useToast } from "@/hooks/use-toast";
-import { supabase } from "@/integrations/supabase/client";
+import { authClient } from "@/integrations/supabase/client";
 import { enforceRateLimit, formatResetTime } from "@/lib/rate-limiter";
 import { RateLimitError } from "@/types/rate-limit";
 import { useAuth } from "@/providers/AuthProvider";
@@ -64,7 +64,7 @@ export default function Login() {
       }
     }
 
-    const { error } = await supabase.auth.signInWithPassword({
+    const { error } = await authClient.signIn.email({
       email: values.email,
       password: values.password,
     });
@@ -83,14 +83,16 @@ export default function Login() {
 
   const onGoogle = async () => {
     setOauthLoading(true);
-    const redirectTo = `${window.location.origin}/dashboard/inicio`;
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider: "google",
-      options: { redirectTo },
-    });
-    setOauthLoading(false);
-    if (error) {
-      toast({ title: "Falha no Google", description: error.message, variant: "destructive" });
+    try {
+      await authClient.signIn.social({
+        provider: "google",
+        callbackURL: "/dashboard/inicio",
+      });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Erro desconhecido";
+      toast({ title: "Falha no Google", description: message, variant: "destructive" });
+    } finally {
+      setOauthLoading(false);
     }
   };
 

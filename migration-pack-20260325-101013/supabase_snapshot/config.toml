@@ -1,0 +1,74 @@
+project_id = "slktzwdfwvjlbozrtnrl"
+
+# IMPORTANT (signing-keys): keep verify_jwt=false and validate JWTs in code via auth.getUser()/getClaims().
+
+[functions.validate-upload]
+verify_jwt = false
+
+[functions.execute-webhook]
+verify_jwt = false
+
+[functions.process-data-export]
+verify_jwt = false
+
+[functions.process-data-deletion]
+verify_jwt = false
+
+[functions.simulate-automation]
+verify_jwt = false
+
+[functions.enrich-contact]
+verify_jwt = false
+
+# Cron / internal runner: authenticated by a shared secret or anon key header in code.
+[functions.run-scheduled-automations]
+verify_jwt = false
+
+[functions.validate-webhook-url]
+verify_jwt = false
+
+[functions.webhook-secret]
+verify_jwt = false
+
+# Cron (Bearer secret in code)
+[functions.rotate-webhook-secrets]
+verify_jwt = false
+
+[functions.log-audit-event]
+verify_jwt = false
+
+# Cron (x-refresh-analytics-secret in code)
+[functions.refresh-analytics]
+verify_jwt = false
+
+# Cron
+[functions.cleanup-expired-data]
+verify_jwt = false
+
+[functions.admin-users]
+verify_jwt = false
+
+# Health check endpoint (kept auth-in-code for compatibility)
+[functions.check-alerts]
+verify_jwt = false
+
+[functions.calculate-slis]
+verify_jwt = false
+
+[functions.evolution-create-instance]
+verify_jwt = false
+
+[functions.evolution-webhook]
+verify_jwt = false
+
+[functions.evolution-send-message]
+verify_jwt = false
+
+[functions.evolution-disconnect-instance]
+verify_jwt = false
+
+[functions.test-evolution-connection]
+verify_jwt = false
+
+[functions.ensure-user-setup]
+verify_jwt = false

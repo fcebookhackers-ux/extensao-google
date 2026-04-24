@@ -15,20 +15,27 @@
   }
 
   :root[data-theme="light"] {
-    --panel: 248 250 252;
-    --panel-2: 226 232 240;
+    --panel: 255 255 255;
+    --panel-2: 241 246 255;
     --ink: 15 23 42;
-    --muted: 71 85 105;
+    --muted: 51 65 85;
     --accent: 245 158 11;
     --accent-2: 34 197 94;
     --danger: 244 63 94;
-    --bg: 241 245 249;
+    --bg: 243 247 253;
   }
 
   body {
     color: rgb(var(--ink));
     background: radial-gradient(circle at 20% 20%, rgba(251, 191, 36, 0.08), transparent 40%),
       radial-gradient(circle at 80% 10%, rgba(16, 185, 129, 0.08), transparent 45%),
+      rgb(var(--bg));
+  }
+
+  :root[data-theme="light"] body {
+    background: radial-gradient(circle at 10% 12%, rgba(59, 130, 246, 0.13), transparent 34%),
+      radial-gradient(circle at 86% 8%, rgba(234, 179, 8, 0.14), transparent 32%),
+      linear-gradient(180deg, rgba(255, 255, 255, 0.75), rgba(243, 247, 253, 0.9)),
       rgb(var(--bg));
   }
 }
@@ -74,40 +81,91 @@ body {
 }
 
 :root[data-theme="light"] .text-slate-200 {
-  color: rgb(30 41 59) !important;
+  color: rgb(22 40 72) !important;
 }
 
 :root[data-theme="light"] .text-slate-300 {
-  color: rgb(51 65 85) !important;
+  color: rgb(28 53 92) !important;
 }
 
 :root[data-theme="light"] .text-slate-400 {
-  color: rgb(71 85 105) !important;
+  color: rgb(49 72 108) !important;
 }
 
 :root[data-theme="light"] .text-slate-500 {
-  color: rgb(100 116 139) !important;
+  color: rgb(71 85 105) !important;
 }
 
 :root[data-theme="light"] .bg-slate-950\/60,
 :root[data-theme="light"] .bg-slate-950\/70 {
-  background-color: rgba(241, 245, 249, 0.85) !important;
+  background-color: rgba(245, 249, 255, 0.9) !important;
 }
 
 :root[data-theme="light"] .bg-slate-900\/60,
 :root[data-theme="light"] .bg-slate-900\/70 {
-  background-color: rgba(226, 232, 240, 0.85) !important;
+  background-color: rgba(237, 244, 255, 0.88) !important;
 }
 
 :root[data-theme="light"] .bg-slate-800,
 :root[data-theme="light"] .bg-slate-800\/80 {
-  background-color: rgba(203, 213, 225, 0.95) !important;
+  background-color: rgba(206, 223, 246, 0.98) !important;
 }
 
 :root[data-theme="light"] .border-slate-800 {
-  border-color: rgb(148 163 184) !important;
+  border-color: rgb(163 188 224) !important;
 }
 
 :root[data-theme="light"] .border-slate-700 {
-  border-color: rgb(148 163 184) !important;
+  border-color: rgb(163 188 224) !important;
+}
+
+:root[data-theme="light"] .popup-shell section,
+:root[data-theme="light"] .popup-shell header {
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08), 0 1px 0 rgba(255, 255, 255, 0.8) inset;
+}
+
+:root[data-theme="light"] .popup-shell input,
+:root[data-theme="light"] .popup-shell select {
+  background-color: rgba(255, 255, 255, 0.96) !important;
+  border-color: rgb(163 188 224) !important;
+  color: rgb(15 23 42) !important;
+}
+
+:root[data-theme="light"] .popup-shell input::placeholder {
+  color: rgb(100 116 139) !important;
+}
+
+:root[data-theme="light"] .popup-shell button.rounded-full.border,
+:root[data-theme="light"] .popup-shell .rounded-2xl.border.bg-slate-900\/70 {
+  background-color: rgba(226, 238, 255, 0.94) !important;
+}
+
+:root[data-theme="light"] .popup-shell button[class*="bg-[rgb(var(--accent))]"] {
+  background-color: rgb(245 158 11) !important;
+  color: rgb(17 24 39) !important;
+  box-shadow: 0 6px 16px rgba(245, 158, 11, 0.32);
+}
+
+:root[data-theme="light"] .popup-shell .text-amber-300 {
+  color: rgb(180 83 9) !important;
+}
+
+:root[data-theme="light"] .popup-shell .text-rose-300 {
+  color: rgb(190 24 93) !important;
+}
+
+:root[data-theme="light"] .popup-shell .text-emerald-300 {
+  color: rgb(5 150 105) !important;
+}
+
+:root[data-theme="light"] .popup-shell .bg-emerald-950\/20 {
+  background-color: rgba(16, 185, 129, 0.12) !important;
+}
+
+:root[data-theme="light"] .popup-shell .border-emerald-900\/40 {
+  border-color: rgba(16, 185, 129, 0.35) !important;
+}
+
+:root[data-theme="light"] .popup-shell .text-emerald-200 {
+  color: rgb(5 150 105) !important;
 }
