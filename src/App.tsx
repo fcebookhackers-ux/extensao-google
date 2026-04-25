@@ -66,9 +66,8 @@ const App = () => {
   useEffect(() => {
     const onUnhandledRejection = (event: PromiseRejectionEvent) => {
       console.error("[global] Unhandled promise rejection:", event.reason);
-      // Impede que o navegador trate como erro fatal (evita “tela em branco” em alguns ambientes)
+      // Evita tela fatal para rejeições assíncronas não-críticas (ex.: 401 em chamadas auxiliares).
       event.preventDefault?.();
-      setFatalError((prev) => prev ?? "Ocorreu um erro inesperado ao carregar a aplicação.");
     };
 
     const onError = (event: ErrorEvent) => {

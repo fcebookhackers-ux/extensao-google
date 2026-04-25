@@ -36,25 +36,30 @@ export function useCookiePreferences(): CookiePrefsState {
     }
 
     setLoading(true);
-    const { data, error } = await supabase
-      // Types file is read-only; keep this access flexible.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      .from("cookie_preferences" as any)
-      .select("analytics, marketing, functional, consent_version, decided_at")
-      .eq("user_id", user.id)
-      .maybeSingle();
+    try {
+      const { data, error } = await supabase
+        // Types file is read-only; keep this access flexible.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .from("cookie_preferences" as any)
+        .select("analytics, marketing, functional, consent_version, decided_at")
+        .eq("user_id", user.id)
+        .maybeSingle();
 
-    if (error) {
-      // If RLS or network errors happen, do not block the UI; fall back to local.
+      if (error) {
+        // If RLS or auth/network errors happen, do not block the UI; fall back to local.
+        setPreferences(readLocalPreferences());
+        return;
+      }
+
+      const next = data ? normalizeFromDb(data) : null;
+      setPreferences(next);
+      if (next) writeLocalPreferences(next);
+    } catch {
+      // Defensive: avoid unhandled rejection from network/auth mismatch.
       setPreferences(readLocalPreferences());
+    } finally {
       setLoading(false);
-      return;
     }
-
-    const next = data ? normalizeFromDb(data) : null;
-    setPreferences(next);
-    if (next) writeLocalPreferences(next);
-    setLoading(false);
   }, [user]);
 
   React.useEffect(() => {
@@ -76,21 +81,25 @@ export function useCookiePreferences(): CookiePrefsState {
 
       if (!user) return;
 
-      await supabase
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        .from("cookie_preferences" as any)
-        .upsert(
-          {
-            user_id: user.id,
-            essential: true,
-            analytics: payload.analytics,
-            marketing: payload.marketing,
-            functional: payload.functional,
-            consent_version: payload.consentVersion,
-            decided_at: payload.decidedAt,
-          },
-          { onConflict: "user_id" },
-        );
+      try {
+        await supabase
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          .from("cookie_preferences" as any)
+          .upsert(
+            {
+              user_id: user.id,
+              essential: true,
+              analytics: payload.analytics,
+              marketing: payload.marketing,
+              functional: payload.functional,
+              consent_version: payload.consentVersion,
+              decided_at: payload.decidedAt,
+            },
+            { onConflict: "user_id" },
+          );
+      } catch {
+        // Keep local preference and avoid breaking UI flow when backend rejects.
+      }
     },
     [user],
   );
