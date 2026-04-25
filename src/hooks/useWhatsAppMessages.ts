@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { supabase } from "@/integrations/supabase/client";
+import { apiFetch, supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 import type { SendMessagePayload, WhatsAppMessage } from "@/types/whatsapp";
 import { mapMessageRow } from "@/types/whatsapp";
@@ -43,7 +43,8 @@ export function useWhatsAppMessages(conversationId?: string) {
 
   const sendMessage = useMutation({
     mutationFn: async (payload: SendMessagePayload) => {
-      const { data, error } = await supabase.functions.invoke("evolution-send-message", {
+      const { data, error } = await apiFetch("/api/whatsapp/messages/send", {
+        method: "POST",
         body: payload,
       });
       if (error) throw error;

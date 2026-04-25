@@ -72,6 +72,25 @@ const betterAuth = createAuthClient({
 
 export const authClient = betterAuth;
 
+// Sobrescrever forgetPassword para usar o endpoint correto
+const _originalAuthClient = authClient as any;
+export const forgetPasswordFixed = async ({ email, redirectTo }: { email: string; redirectTo: string }) => {
+  try {
+    const res = await fetch("https://auth.zapfllow.com.br/api/auth/request-password-reset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ email, redirectTo }),
+    });
+    const data = await res.json();
+    if (!res.ok) return { data: null, error: { message: data.message || "Erro ao enviar email" } };
+    return { data, error: null };
+  } catch (err: any) {
+    return { data: null, error: { message: err.message } };
+  }
+};
+_originalAuthClient.forgetPassword = forgetPasswordFixed;
+
 function normalizeSession(raw: any): { session: Session | null; user: User | null } {
   const session = (raw?.session ?? null) as Session | null;
   const user = ((raw?.user ?? session?.user) ?? null) as User | null;

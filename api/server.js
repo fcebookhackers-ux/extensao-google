@@ -11,6 +11,8 @@ const port = process.env.PORT ? Number(process.env.PORT) : 3001;
 const defaultHistoryLimit = 10;
 const defaultAlertLimit = 10;
 const alertDropThreshold = Math.max(0.001, Number(process.env.ALERT_DROP_THRESHOLD ?? 0.03));
+const authServiceBaseUrl = (process.env.AUTH_SERVICE_URL ?? "https://auth.zapfllow.com.br").replace(/\/$/, "");
+const publicApiBaseUrl = (process.env.PUBLIC_API_URL ?? "https://api.zapfllow.com.br").replace(/\/$/, "");
 
 app.use(cors());
 app.use(express.json({ limit: "256kb" }));
@@ -38,11 +40,46 @@ const supabaseAuth =
       })
     : null;
 
+function getEvolutionConfig() {
+  const url = (process.env.EVOLUTION_API_URL ?? "").replace(/\/$/, "");
+  const key = process.env.EVOLUTION_API_KEY ?? "";
+  if (!url || !key) return null;
+  return { url, key };
+}
+
+function evolutionHeaders(extra = {}) {
+  const cfg = getEvolutionConfig();
+  if (!cfg) throw new Error("Evolution API is not configured");
+  return {
+    apikey: cfg.key,
+    ...extra,
+  };
+}
+
+function normalizeToJid(to) {
+  const cleaned = String(to ?? "").trim();
+  if (cleaned.includes("@")) return cleaned;
+  const digits = cleaned.replace(/\D/g, "");
+  return `${digits}@s.whatsapp.net`;
+}
+
+function normalizePhone(value) {
+  return String(value ?? "").replace("@s.whatsapp.net", "").replace(/\D/g, "");
+}
+
+function extractMessageContent(message) {
+  if (!message || typeof message !== "object") return "";
+  return (
+    message?.conversation ??
+    message?.extendedTextMessage?.text ??
+    message?.imageMessage?.caption ??
+    message?.videoMessage?.caption ??
+    message?.documentMessage?.caption ??
+    ""
+  );
+}
+
 async function requireUser(req, res) {
-  if (!supabaseAuth) {
-    res.status(500).json({ ok: false, error: "Server misconfigured", details: "Missing SUPABASE_ANON_KEY" });
-    return null;
-  }
   const authHeader = req.headers.authorization ?? "";
   const match = authHeader.match(/^Bearer\s+(.+)$/i);
   const token = match?.[1];
@@ -50,18 +87,61 @@ async function requireUser(req, res) {
     res.status(401).json({ ok: false, error: "Unauthorized", details: "Missing Authorization: Bearer <token>" });
     return null;
   }
-  const { data, error } = await supabaseAuth.auth.getUser(token);
-  if (error || !data?.user?.id) {
-    res.status(401).json({ ok: false, error: "Unauthorized", details: error?.message ?? "Invalid token" });
-    return null;
+
+  if (supabaseAuth) {
+    const { data, error } = await supabaseAuth.auth.getUser(token);
+    if (!error && data?.user?.id) {
+      return { userId: data.user.id, email: data.user.email ?? null };
+    }
   }
-  return { userId: data.user.id, email: data.user.email ?? null };
+
+  // Fallback para Better Auth (VPS auth-service).
+  try {
+    const response = await fetch(`${authServiceBaseUrl}/api/auth/get-session`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/json",
+      },
+    });
+
+    if (response.ok) {
+      const payload = await response.json().catch(() => null);
+      const user = payload?.session?.user ?? payload?.user ?? payload?.data?.user ?? null;
+      if (user?.id) {
+        return { userId: user.id, email: user.email ?? null };
+      }
+    }
+  } catch (error) {
+    console.error("Auth service verification failed:", error);
+  }
+
+  res.status(401).json({ ok: false, error: "Unauthorized", details: "Invalid auth token" });
+  return null;
 }
 
 async function consumeQuota(userId) {
   const { data, error } = await supabaseAdmin.rpc("consume_analysis_quota", { p_user_id: userId });
   if (error) throw new Error(`Quota RPC failed: ${error.message}`);
   return data;
+}
+
+async function requireWhatsappManagePermission(userId, workspaceId) {
+  const { data, error } = await supabaseAdmin.rpc("workspace_has_permission", {
+    p_workspace_id: workspaceId,
+    p_permission: "whatsapp.manage",
+    p_user_id: userId,
+  });
+
+  if (error) {
+    throw new Error(`Permission check failed: ${error.message}`);
+  }
+
+  if (!Boolean(data)) {
+    const forbidden = new Error("Forbidden: missing whatsapp.manage permission");
+    forbidden.code = "FORBIDDEN";
+    throw forbidden;
+  }
 }
 
 async function saveAnalysis(userId, analysis) {
@@ -207,6 +287,459 @@ app.get("/api/me", async (req, res) => {
     watchlistLimit: Number(planRow?.watchlist_limit ?? 30),
     analysesToday: Number(usageRow?.analyses_count ?? 0)
   });
+});
+
+app.get("/api/whatsapp/evolution/test", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+
+  const cfg = getEvolutionConfig();
+  if (!cfg) {
+    return res.status(500).json({
+      ok: false,
+      success: false,
+      error: "Evolution API not configured",
+      details: "Missing EVOLUTION_API_URL or EVOLUTION_API_KEY",
+    });
+  }
+
+  try {
+    const start = Date.now();
+    const response = await fetch(`${cfg.url}/instance/fetchInstances`, {
+      method: "GET",
+      headers: evolutionHeaders(),
+    });
+    const durationMs = Date.now() - start;
+    const text = await response.text();
+    let payload = null;
+    try {
+      payload = text ? JSON.parse(text) : null;
+    } catch {
+      payload = text;
+    }
+
+    if (!response.ok) {
+      return res.status(502).json({
+        ok: false,
+        success: false,
+        error: "Evolution API request failed",
+        message: typeof payload === "string" ? payload : payload?.message ?? `HTTP ${response.status}`,
+        details: { status: response.status, body: payload },
+      });
+    }
+
+    const list = Array.isArray(payload)
+      ? payload
+      : Array.isArray(payload?.instance)
+      ? payload.instance
+      : Array.isArray(payload?.instances)
+      ? payload.instances
+      : [];
+
+    return res.json({
+      ok: true,
+      success: true,
+      message: "Conexão com Evolution API funcionando",
+      summary: {
+        url: cfg.url,
+        status: response.status,
+        responseTime: `${durationMs}ms`,
+        instancesFound: list.length,
+      },
+      raw: payload,
+    });
+  } catch (error) {
+    return res.status(502).json({
+      ok: false,
+      success: false,
+      error: "Evolution connectivity test failed",
+      message: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
+});
+
+app.post("/api/whatsapp/instances/create", async (req, res) => {
+  if (!supabaseAdmin) return res.status(500).json({ ok: false, error: "Supabase not configured" });
+  const user = await requireUser(req, res);
+  if (!user) return;
+
+  const cfg = getEvolutionConfig();
+  if (!cfg) {
+    return res.status(500).json({ ok: false, error: "Evolution API not configured" });
+  }
+
+  const workspaceId = String(req.body?.workspaceId ?? "").trim();
+  if (!workspaceId) return res.status(400).json({ ok: false, error: "workspaceId is required" });
+
+  try {
+    await requireWhatsappManagePermission(user.userId, workspaceId);
+
+    const { data: existing, error: existingError } = await supabaseAdmin
+      .from("whatsapp_instances")
+      .select("*")
+      .eq("workspace_id", workspaceId)
+      .maybeSingle();
+    if (existingError) return res.status(500).json({ ok: false, error: existingError.message });
+    if (existing?.id) return res.json(existing);
+
+    const instanceName = `zapfllow_${workspaceId.slice(0, 8)}_${Date.now()}`;
+    const createResponse = await fetch(`${cfg.url}/instance/create`, {
+      method: "POST",
+      headers: evolutionHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ instanceName, qrcode: true, integration: "WHATSAPP-BAILEYS" }),
+    });
+
+    const createText = await createResponse.text();
+    let createPayload = null;
+    try {
+      createPayload = createText ? JSON.parse(createText) : null;
+    } catch {
+      createPayload = null;
+    }
+
+    if (!createResponse.ok) {
+      return res.status(502).json({
+        ok: false,
+        error: "Failed to create instance in Evolution API",
+        details: createPayload?.message ?? createText ?? `HTTP ${createResponse.status}`,
+      });
+    }
+
+    const evolutionInstanceId = createPayload?.instance?.instanceId ?? createPayload?.instanceId ?? null;
+    const returnedInstanceName =
+      createPayload?.instance?.instanceName ?? createPayload?.instance?.name ?? createPayload?.instanceName ?? instanceName;
+
+    const webhookUrl = `${publicApiBaseUrl}/api/whatsapp/evolution/webhook`;
+    await fetch(`${cfg.url}/webhook/set/${encodeURIComponent(returnedInstanceName)}`, {
+      method: "POST",
+      headers: evolutionHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({
+        url: webhookUrl,
+        webhook_by_events: true,
+        webhook_base64: true,
+        events: ["QRCODE_UPDATED", "CONNECTION_UPDATE", "MESSAGES_UPSERT", "MESSAGES_UPDATE", "SEND_MESSAGE"],
+      }),
+    }).catch((err) => {
+      console.error("Failed to configure Evolution webhook:", err);
+    });
+
+    const { data: inserted, error: insertError } = await supabaseAdmin
+      .from("whatsapp_instances")
+      .insert({
+        workspace_id: workspaceId,
+        instance_name: returnedInstanceName,
+        evolution_instance_id: evolutionInstanceId,
+        status: "connecting",
+        webhook_url: webhookUrl,
+        webhook_events: ["QRCODE_UPDATED", "CONNECTION_UPDATE", "MESSAGES_UPSERT"],
+      })
+      .select("*")
+      .single();
+    if (insertError) return res.status(500).json({ ok: false, error: insertError.message });
+
+    const connectResponse = await fetch(`${cfg.url}/instance/connect/${encodeURIComponent(returnedInstanceName)}`, {
+      method: "GET",
+      headers: evolutionHeaders(),
+    }).catch(() => null);
+
+    if (connectResponse?.ok) {
+      const connectPayload = await connectResponse.json().catch(() => null);
+      const qrCode = connectPayload?.base64 ?? connectPayload?.qrcode ?? null;
+      if (qrCode) {
+        await supabaseAdmin.from("whatsapp_instances").update({ qr_code: qrCode, status: "qr_ready" }).eq("id", inserted.id);
+        inserted.qr_code = qrCode;
+        inserted.status = "qr_ready";
+      }
+    }
+
+    return res.json(inserted);
+  } catch (error) {
+    if (error?.code === "FORBIDDEN") return res.status(403).json({ ok: false, error: error.message });
+    return res.status(500).json({ ok: false, error: error instanceof Error ? error.message : "Unknown error" });
+  }
+});
+
+app.post("/api/whatsapp/instances/disconnect", async (req, res) => {
+  if (!supabaseAdmin) return res.status(500).json({ ok: false, error: "Supabase not configured" });
+  const user = await requireUser(req, res);
+  if (!user) return;
+  const cfg = getEvolutionConfig();
+  if (!cfg) return res.status(500).json({ ok: false, error: "Evolution API not configured" });
+
+  const instanceId = String(req.body?.instanceId ?? "").trim();
+  if (!instanceId) return res.status(400).json({ ok: false, error: "instanceId is required" });
+
+  try {
+    const { data: instance, error: instanceError } = await supabaseAdmin
+      .from("whatsapp_instances")
+      .select("id,workspace_id,instance_name")
+      .eq("id", instanceId)
+      .maybeSingle();
+    if (instanceError) return res.status(500).json({ ok: false, error: instanceError.message });
+    if (!instance) return res.status(404).json({ ok: false, error: "Instance not found" });
+
+    await requireWhatsappManagePermission(user.userId, instance.workspace_id);
+
+    await fetch(`${cfg.url}/instance/logout/${encodeURIComponent(instance.instance_name)}`, {
+      method: "DELETE",
+      headers: evolutionHeaders(),
+    }).catch((err) => {
+      console.error("Evolution logout failed:", err);
+    });
+    await fetch(`${cfg.url}/instance/delete/${encodeURIComponent(instance.instance_name)}`, {
+      method: "DELETE",
+      headers: evolutionHeaders(),
+    }).catch((err) => {
+      console.error("Evolution delete failed:", err);
+    });
+
+    const { error: deleteError } = await supabaseAdmin.from("whatsapp_instances").delete().eq("id", instance.id);
+    if (deleteError) return res.status(500).json({ ok: false, error: deleteError.message });
+    return res.json({ ok: true, success: true });
+  } catch (error) {
+    if (error?.code === "FORBIDDEN") return res.status(403).json({ ok: false, error: error.message });
+    return res.status(500).json({ ok: false, error: error instanceof Error ? error.message : "Unknown error" });
+  }
+});
+
+app.post("/api/whatsapp/messages/send", async (req, res) => {
+  if (!supabaseAdmin) return res.status(500).json({ ok: false, error: "Supabase not configured" });
+  const user = await requireUser(req, res);
+  if (!user) return;
+  const cfg = getEvolutionConfig();
+  if (!cfg) return res.status(500).json({ ok: false, error: "Evolution API not configured" });
+
+  const whatsappInstanceId = String(req.body?.instanceId ?? req.body?.whatsappInstanceId ?? "").trim();
+  const to = String(req.body?.to ?? "").trim();
+  const message = String(req.body?.message ?? "").trim();
+  const mediaUrl = req.body?.mediaUrl ? String(req.body.mediaUrl) : null;
+  const mediaType = req.body?.mediaType ? String(req.body.mediaType) : "image";
+
+  if (!whatsappInstanceId || !to || !message) {
+    return res.status(400).json({ ok: false, error: "instanceId/whatsappInstanceId, to and message are required" });
+  }
+
+  try {
+    const { data: instance, error: instanceError } = await supabaseAdmin
+      .from("whatsapp_instances")
+      .select("id,workspace_id,instance_name,phone_number,status")
+      .eq("id", whatsappInstanceId)
+      .maybeSingle();
+    if (instanceError) return res.status(500).json({ ok: false, error: instanceError.message });
+    if (!instance) return res.status(404).json({ ok: false, error: "Instance not found" });
+
+    await requireWhatsappManagePermission(user.userId, instance.workspace_id);
+
+    const jid = normalizeToJid(to);
+    const endpoint = mediaUrl
+      ? `${cfg.url}/message/sendMedia/${encodeURIComponent(instance.instance_name)}`
+      : `${cfg.url}/message/sendText/${encodeURIComponent(instance.instance_name)}`;
+
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: evolutionHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify(
+        mediaUrl
+          ? { number: jid, mediatype: mediaType, media: mediaUrl, caption: message }
+          : { number: jid, text: message },
+      ),
+    });
+
+    const responseText = await response.text();
+    let responsePayload = null;
+    try {
+      responsePayload = responseText ? JSON.parse(responseText) : null;
+    } catch {
+      responsePayload = null;
+    }
+
+    if (!response.ok) {
+      return res.status(502).json({
+        ok: false,
+        error: "Failed to send message with Evolution API",
+        details: responsePayload?.message ?? responseText ?? `HTTP ${response.status}`,
+      });
+    }
+
+    // Persist outgoing message to keep UI in sync.
+    const toNumber = normalizePhone(jid);
+    const fromNumber = normalizePhone(instance.phone_number);
+
+    let contactId = null;
+    const { data: rpcContact } = await supabaseAdmin.rpc("upsert_contact_from_whatsapp", {
+      p_workspace_id: instance.workspace_id,
+      p_phone: toNumber,
+      p_name: null,
+    });
+    if (rpcContact) contactId = rpcContact;
+
+    const messageId =
+      responsePayload?.key?.id ??
+      responsePayload?.messageId ??
+      responsePayload?.id ??
+      `out_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+    await supabaseAdmin.from("whatsapp_messages").upsert(
+      {
+        whatsapp_instance_id: instance.id,
+        workspace_id: instance.workspace_id,
+        contact_id: contactId,
+        message_id: String(messageId),
+        from_number: fromNumber || "unknown",
+        to_number: toNumber,
+        message_type: mediaUrl ? mediaType : "text",
+        content: message,
+        media_url: mediaUrl,
+        timestamp: new Date().toISOString(),
+        is_from_me: true,
+        processed: true,
+        processed_at: new Date().toISOString(),
+        automation_triggered: false,
+      },
+      { onConflict: "whatsapp_instance_id,message_id", ignoreDuplicates: true },
+    );
+
+    if (contactId) {
+      await supabaseAdmin.rpc("upsert_whatsapp_conversation", {
+        p_whatsapp_instance_id: instance.id,
+        p_workspace_id: instance.workspace_id,
+        p_contact_id: contactId,
+        p_last_message_content: message,
+        p_last_message_from_me: true,
+      });
+    }
+
+    await supabaseAdmin
+      .from("whatsapp_instances")
+      .update({ last_seen_at: new Date().toISOString() })
+      .eq("id", instance.id);
+
+    return res.json({ ok: true, success: true, data: responsePayload ?? {} });
+  } catch (error) {
+    if (error?.code === "FORBIDDEN") return res.status(403).json({ ok: false, error: error.message });
+    return res.status(500).json({ ok: false, error: error instanceof Error ? error.message : "Unknown error" });
+  }
+});
+
+app.post("/api/whatsapp/evolution/webhook", async (req, res) => {
+  if (!supabaseAdmin) return res.status(500).json({ ok: false, error: "Supabase not configured" });
+  try {
+    const payload = req.body ?? {};
+    const event = String(payload?.event ?? payload?.type ?? "").toUpperCase().replace(/\./g, "_");
+    const data = payload?.data ?? payload;
+    const instanceName = payload?.instance ?? payload?.instanceName ?? data?.instance ?? data?.instanceName;
+    if (!instanceName) return res.status(400).json({ ok: false, error: "No instance provided" });
+
+    const { data: instance, error: instanceError } = await supabaseAdmin
+      .from("whatsapp_instances")
+      .select("id,workspace_id,instance_name,phone_number")
+      .eq("instance_name", instanceName)
+      .maybeSingle();
+    if (instanceError) return res.status(500).json({ ok: false, error: instanceError.message });
+    if (!instance) return res.status(404).json({ ok: false, error: "Instance not found" });
+
+    if (event === "QRCODE_UPDATED") {
+      const qrcode = data?.qrcode ?? payload?.qrcode ?? data?.base64 ?? null;
+      if (qrcode) {
+        await supabaseAdmin
+          .from("whatsapp_instances")
+          .update({ qr_code: qrcode, status: "qr_ready", last_seen_at: new Date().toISOString() })
+          .eq("id", instance.id);
+      }
+      return res.json({ ok: true });
+    }
+
+    if (event === "CONNECTION_UPDATE") {
+      const stateRaw = String(data?.state ?? data?.status ?? payload?.status ?? "").toLowerCase();
+      const stateMap = {
+        open: "connected",
+        connected: "connected",
+        close: "disconnected",
+        disconnected: "disconnected",
+        connecting: "connecting",
+      };
+      const nextStatus = stateMap[stateRaw] ?? "connecting";
+      const updatePayload = {
+        status: nextStatus,
+        qr_code: nextStatus === "connected" ? null : undefined,
+        connected_at: nextStatus === "connected" ? new Date().toISOString() : undefined,
+        last_seen_at: new Date().toISOString(),
+        phone_number: data?.instance?.owner ? normalizePhone(data.instance.owner) : undefined,
+        profile_name: data?.instance?.profileName ?? undefined,
+      };
+      await supabaseAdmin.from("whatsapp_instances").update(updatePayload).eq("id", instance.id);
+      return res.json({ ok: true });
+    }
+
+    if (event === "MESSAGES_UPSERT") {
+      const messages = Array.isArray(data?.messages)
+        ? data.messages
+        : Array.isArray(payload?.messages)
+        ? payload.messages
+        : Array.isArray(data)
+        ? data
+        : [];
+
+      for (const msg of messages) {
+        const key = msg?.key ?? {};
+        const remoteJid = String(key?.remoteJid ?? msg?.key?.remoteJid ?? "");
+        if (!remoteJid) continue;
+        const fromMe = Boolean(key?.fromMe);
+        const number = normalizePhone(remoteJid);
+        const content = extractMessageContent(msg?.message ?? {});
+        const tsSec = Number(msg?.messageTimestamp ?? Date.now() / 1000);
+        const timestamp = Number.isFinite(tsSec) ? new Date(tsSec * 1000).toISOString() : new Date().toISOString();
+
+        const { data: contactId } = await supabaseAdmin.rpc("upsert_contact_from_whatsapp", {
+          p_workspace_id: instance.workspace_id,
+          p_phone: number,
+          p_name: msg?.pushName ?? null,
+        });
+
+        const fromNumber = fromMe ? normalizePhone(instance.phone_number) : number;
+        const toNumber = fromMe ? number : normalizePhone(instance.phone_number);
+
+        await supabaseAdmin.from("whatsapp_messages").upsert(
+          {
+            whatsapp_instance_id: instance.id,
+            workspace_id: instance.workspace_id,
+            contact_id: contactId ?? null,
+            message_id: String(key?.id ?? msg?.id ?? `${Date.now()}`),
+            from_number: fromNumber || "unknown",
+            to_number: toNumber || "unknown",
+            message_type: "text",
+            content,
+            timestamp,
+            is_from_me: fromMe,
+            processed: false,
+          },
+          { onConflict: "whatsapp_instance_id,message_id", ignoreDuplicates: true },
+        );
+
+        if (contactId) {
+          await supabaseAdmin.rpc("upsert_whatsapp_conversation", {
+            p_whatsapp_instance_id: instance.id,
+            p_workspace_id: instance.workspace_id,
+            p_contact_id: contactId,
+            p_last_message_content: content,
+            p_last_message_from_me: fromMe,
+          });
+        }
+      }
+
+      await supabaseAdmin
+        .from("whatsapp_instances")
+        .update({ last_seen_at: new Date().toISOString() })
+        .eq("id", instance.id);
+
+      return res.json({ ok: true, processed: messages.length });
+    }
+
+    return res.json({ ok: true, ignored: true });
+  } catch (error) {
+    console.error("Evolution webhook error:", error);
+    return res.status(500).json({ ok: false, error: error instanceof Error ? error.message : "Unknown webhook error" });
+  }
 });
 
 app.post("/api/watchlist", async (req, res) => {

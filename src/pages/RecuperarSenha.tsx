@@ -2,7 +2,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { AuthCardLayout } from "@/components/auth/AuthCardLayout";
 import { useToast } from "@/hooks/use-toast";
-import { authClient } from "@/integrations/supabase/client";
+import { forgetPasswordFixed } from "@/integrations/supabase/client";
 import { enforceRateLimit, formatResetTime } from "@/lib/rate-limiter";
 import { RateLimitError } from "@/types/rate-limit";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -40,7 +40,7 @@ export default function RecuperarSenha() {
     }
 
     const redirectTo = `${window.location.origin}/redefinir-senha`;
-    const { error } = await authClient.forgetPassword({
+    const { error } = await forgetPasswordFixed({
       email: values.email,
       redirectTo,
     });

@@ -25,7 +25,7 @@ import { useWhatsAppInstance } from "@/hooks/useWhatsAppInstance";
 import { formatPhoneNumber, formatDate, formatRelativeTime } from "@/lib/utils";
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { supabase } from "@/integrations/supabase/client";
+import { apiFetch, supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/providers/AuthProvider";
 
 // Modelo: instância global → sempre usar o workspace principal
@@ -94,7 +94,7 @@ export default function WhatsAppConnect() {
     try {
       console.log("🧪 Testando conexão Evolution API...");
 
-      const { data, error } = await supabase.functions.invoke("test-evolution-connection");
+      const { data, error } = await apiFetch("/api/whatsapp/evolution/test");
 
       console.log("📊 Resultado do teste:", { data, error });
 

@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { supabase } from "@/integrations/supabase/client";
+import { apiFetch, supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 import type { WhatsAppInstance } from "@/types/whatsapp";
 import { mapInstanceRow } from "@/types/whatsapp";
@@ -93,7 +93,8 @@ export function useWhatsAppInstance(workspaceId: string | undefined) {
 
   const createInstance = useMutation({
     mutationFn: async () => {
-      const { data, error } = await supabase.functions.invoke("evolution-create-instance", {
+      const { data, error } = await apiFetch("/api/whatsapp/instances/create", {
+        method: "POST",
         body: { workspaceId },
       });
       if (error) {
@@ -123,7 +124,8 @@ export function useWhatsAppInstance(workspaceId: string | undefined) {
 
   const disconnectInstance = useMutation({
     mutationFn: async (instanceId: string) => {
-      const { data, error } = await supabase.functions.invoke("evolution-disconnect-instance", {
+      const { data, error } = await apiFetch("/api/whatsapp/instances/disconnect", {
+        method: "POST",
         body: { instanceId },
       });
       if (error) {
@@ -153,7 +155,8 @@ export function useWhatsAppInstance(workspaceId: string | undefined) {
     mutationFn: async (instanceId: string) => {
       if (!workspaceId) throw new Error("workspaceId ausente");
 
-      const { error: discErr } = await supabase.functions.invoke("evolution-disconnect-instance", {
+      const { error: discErr } = await apiFetch("/api/whatsapp/instances/disconnect", {
+        method: "POST",
         body: { instanceId },
       });
       if (discErr) {
@@ -161,7 +164,8 @@ export function useWhatsAppInstance(workspaceId: string | undefined) {
         throw new Error(message);
       }
 
-      const { data: created, error: createErr } = await supabase.functions.invoke("evolution-create-instance", {
+      const { data: created, error: createErr } = await apiFetch("/api/whatsapp/instances/create", {
+        method: "POST",
         body: { workspaceId },
       });
       if (createErr) {
